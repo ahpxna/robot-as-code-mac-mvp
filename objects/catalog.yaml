@@ -1,0 +1,44 @@
+# Household object catalog. Scenarios spawn objects as (type, colour) pairs.
+# The perception stack only knows this catalog's *categories and colours*
+# (what a detector would be trained on) — never where objects are.
+types:
+  bottle:
+    shape: cylinder
+    radius: 0.033
+    height: 0.20
+    mass: 0.50                      # 500 ml water bottle
+    friction: 1.0
+    aliases: [bottle, water bottle, chai, chai nước, bình nước, chai lavie]
+  cup:
+    shape: cylinder
+    radius: 0.040
+    height: 0.10
+    mass: 0.25
+    friction: 1.0
+    aliases: [cup, mug, glass, cốc, ly, tách, cái cốc, cái ly]
+  can:
+    shape: cylinder
+    radius: 0.033
+    height: 0.125
+    mass: 0.35
+    friction: 1.0
+    aliases: [can, soda can, lon, lon nước, lon bia]
+  apple:
+    shape: sphere
+    radius: 0.040
+    mass: 0.18
+    friction: 1.2
+    aliases: [apple, fruit, táo, quả táo, trái táo]
+
+colors:
+  red:    {rgba: [0.85, 0.08, 0.06, 1], aliases: [red, đỏ, màu đỏ]}
+  blue:   {rgba: [0.10, 0.30, 0.90, 1], aliases: [blue, xanh dương, xanh biển, xanh da trời, màu xanh dương]}
+  green:  {rgba: [0.20, 0.72, 0.15, 1], aliases: [green, xanh lá, xanh lá cây, màu xanh lá]}
+  yellow: {rgba: [0.95, 0.80, 0.10, 1], aliases: [yellow, vàng, màu vàng]}
+
+perception:
+  min_saturation: 0.50
+  min_value: 0.18
+  hue_tolerance_deg: 14
+  min_pixels: 12
+  max_range: 4.0

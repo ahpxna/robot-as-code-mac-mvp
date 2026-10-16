@@ -1,0 +1,14 @@
+# High reach (kitchen counter, 0.9 m) and a floor drop-off.
+name: cup_to_drop_zone
+world: apartment
+robot: helper_rover
+instruction: "Mang cái cốc xanh dương tới đích"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: blue_cup, type: cup, color: blue, support: kitchen_counter, max_depth: 0.22}
+  - {name: red_bottle, type: bottle, color: red, support: kitchen_table}
+success:
+  - object_in_zone: {object: blue_cup, place: drop_zone}
+  - object_upright: blue_cup
+  - robot_not_holding: true
+time_limit: 300

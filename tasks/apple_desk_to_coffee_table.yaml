@@ -1,0 +1,13 @@
+# A sphere (rolls if dropped carelessly), English instruction.
+name: apple_desk_to_coffee_table
+world: apartment
+robot: helper_rover
+instruction: "Take the green apple from the desk to the coffee table"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: green_apple, type: apple, color: green, support: desk}
+  - {name: blue_cup, type: cup, color: blue, support: coffee_table}
+success:
+  - object_on: {object: green_apple, surface: coffee_table}
+  - robot_not_holding: true
+time_limit: 300

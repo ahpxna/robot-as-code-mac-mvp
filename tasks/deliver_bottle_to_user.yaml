@@ -1,0 +1,15 @@
+# The headline example: fetch a bottle from a living-room table and bring it to the user.
+name: deliver_bottle_to_user
+world: apartment
+robot: helper_rover
+instruction: "Đi vào phòng khách, tìm chai nước trên bàn, lấy nó rồi mang đến cho tao."
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: red_bottle, type: bottle, color: red, support: coffee_table}
+  - {name: blue_cup, type: cup, color: blue, support: coffee_table}
+  - {name: green_apple, type: apple, color: green, support: desk}
+success:
+  - object_on: {object: red_bottle, surface: side_table}     # the user's handover surface
+  - object_upright: red_bottle
+  - robot_not_holding: true
+time_limit: 300

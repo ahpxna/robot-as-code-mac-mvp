@@ -1,0 +1,99 @@
+<!--
+  Static apartment: living room (south), kitchen (north-west), office (north-east).
+  Only static geometry lives here. Robots and movable objects are added by
+  robotcode.scene from robots/*.yaml and tasks/*.yaml.
+
+  Conventions used by the map builder (robotcode.mapping):
+  * every collidable geom attached to the world body is part of the prior map;
+  * surfaces referenced from semantic.yaml are boxes whose top face is the
+    support plane.
+-->
+<mujoco model="apartment">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic" impratio="10"/>
+  <statistic center="4 3.5 0.6" extent="5"/>
+  <visual>
+    <global offwidth="1280" offheight="960" azimuth="-120" elevation="-45"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.45 0.45 0.45" specular="0.1 0.1 0.1"/>
+    <map znear="0.01" zfar="40"/>
+  </visual>
+
+  <asset>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1="0.78 0.78 0.76" rgb2="0.70 0.70 0.69" width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="16 14" reflectance="0.05"/>
+    <material name="wall_mat" rgba="0.92 0.91 0.88 1"/>
+    <material name="wood_mat" rgba="0.62 0.52 0.42 1"/>
+    <material name="dark_wood_mat" rgba="0.36 0.31 0.27 1"/>
+    <material name="sofa_mat" rgba="0.38 0.40 0.45 1"/>
+    <material name="counter_mat" rgba="0.82 0.82 0.80 1"/>
+    <material name="appliance_mat" rgba="0.94 0.94 0.94 1"/>
+    <material name="skin_mat" rgba="0.86 0.72 0.62 1"/>
+    <material name="cloth_mat" rgba="0.42 0.42 0.44 1"/>
+  </asset>
+
+  <default>
+    <default class="wall"><geom type="box" material="wall_mat"/></default>
+    <default class="furniture"><geom type="box" material="wood_mat"/></default>
+    <default class="leg"><geom type="box" material="dark_wood_mat"/></default>
+    <default class="person"><geom type="capsule" material="cloth_mat"/></default>
+  </default>
+
+  <worldbody>
+    <light name="sun" directional="true" pos="4 3.5 6" dir="-0.2 -0.3 -1" diffuse="0.55 0.55 0.55" castshadow="true"/>
+    <geom name="floor" type="plane" pos="4 3.5 0" size="6 5 0.1" material="floor_mat" friction="1.0 0.005 0.0001"/>
+
+    <!-- Outer walls (1.6 m high, 0.1 m thick) -->
+    <geom name="wall_south" class="wall" pos="4 0 0.8" size="4.05 0.05 0.8"/>
+    <geom name="wall_north" class="wall" pos="4 7 0.8" size="4.05 0.05 0.8"/>
+    <geom name="wall_west" class="wall" pos="0 3.5 0.8" size="0.05 3.45 0.8"/>
+    <geom name="wall_east" class="wall" pos="8 3.5 0.8" size="0.05 3.45 0.8"/>
+    <!-- Interior wall y=3.6 with doorways x=[1.5,2.5] (kitchen) and x=[5.5,6.5] (office) -->
+    <geom name="wall_mid_w" class="wall" pos="0.775 3.6 0.8" size="0.725 0.05 0.8"/>
+    <geom name="wall_mid_c" class="wall" pos="4.0 3.6 0.8" size="1.5 0.05 0.8"/>
+    <geom name="wall_mid_e" class="wall" pos="7.225 3.6 0.8" size="0.725 0.05 0.8"/>
+    <!-- Kitchen / office partition x=4 -->
+    <geom name="wall_partition" class="wall" pos="4.0 5.3 0.8" size="0.05 1.65 0.8"/>
+
+    <!-- ===== Kitchen ===== -->
+    <geom name="kitchen_counter" class="furniture" pos="1.3 6.65 0.45" size="1.2 0.3 0.45" material="counter_mat"/>
+    <geom name="fridge" class="furniture" pos="3.5 6.6 0.75" size="0.4 0.35 0.75" material="appliance_mat"/>
+    <geom name="kitchen_table_top" class="furniture" pos="2.2 5.0 0.73" size="0.6 0.35 0.02"/>
+    <geom name="kitchen_table_leg1" class="leg" pos="1.65 4.70 0.355" size="0.025 0.025 0.355"/>
+    <geom name="kitchen_table_leg2" class="leg" pos="2.75 4.70 0.355" size="0.025 0.025 0.355"/>
+    <geom name="kitchen_table_leg3" class="leg" pos="1.65 5.30 0.355" size="0.025 0.025 0.355"/>
+    <geom name="kitchen_table_leg4" class="leg" pos="2.75 5.30 0.355" size="0.025 0.025 0.355"/>
+
+    <!-- ===== Office ===== -->
+    <geom name="desk_top" class="furniture" pos="6.6 6.6 0.73" size="0.7 0.35 0.02"/>
+    <geom name="desk_side_w" class="leg" pos="5.93 6.6 0.355" size="0.02 0.33 0.355"/>
+    <geom name="desk_side_e" class="leg" pos="7.27 6.6 0.355" size="0.02 0.33 0.355"/>
+    <geom name="office_chair" type="cylinder" pos="5.2 6.0 0.23" size="0.25 0.23" material="sofa_mat"/>
+    <geom name="bookshelf" class="furniture" pos="7.725 4.8 0.7" size="0.225 0.8 0.7"/>
+
+    <!-- ===== Living room ===== -->
+    <geom name="sofa_seat" class="furniture" pos="4.0 0.525 0.21" size="1.2 0.425 0.21" material="sofa_mat"/>
+    <geom name="sofa_back" class="furniture" pos="4.0 0.2 0.635" size="1.2 0.1 0.215" material="sofa_mat"/>
+    <geom name="coffee_table_top" class="furniture" pos="4.0 1.75 0.43" size="0.5 0.275 0.02"/>
+    <geom name="coffee_table_leg1" class="leg" pos="3.54 1.515 0.205" size="0.02 0.02 0.205"/>
+    <geom name="coffee_table_leg2" class="leg" pos="4.46 1.515 0.205" size="0.02 0.02 0.205"/>
+    <geom name="coffee_table_leg3" class="leg" pos="3.54 1.985 0.205" size="0.02 0.02 0.205"/>
+    <geom name="coffee_table_leg4" class="leg" pos="4.46 1.985 0.205" size="0.02 0.02 0.205"/>
+    <geom name="side_table_top" class="furniture" pos="5.75 0.55 0.53" size="0.25 0.25 0.02"/>
+    <geom name="side_table_post" type="cylinder" pos="5.75 0.55 0.255" size="0.04 0.255" material="dark_wood_mat"/>
+    <geom name="tv_stand" class="furniture" pos="4.0 3.325 0.25" size="1.0 0.175 0.25" material="dark_wood_mat"/>
+    <geom name="tv" type="box" pos="4.0 3.45 0.85" size="0.6 0.03 0.35" rgba="0.08 0.08 0.09 1"/>
+
+    <!-- The user, seated on the sofa facing the coffee table -->
+    <geom name="user_torso" class="person" fromto="4.6 0.45 0.50 4.6 0.42 0.95" size="0.16"/>
+    <geom name="user_head" type="sphere" pos="4.6 0.45 1.15" size="0.10" material="skin_mat"/>
+    <geom name="user_thigh_l" class="person" fromto="4.5 0.55 0.48 4.5 0.98 0.48" size="0.07"/>
+    <geom name="user_thigh_r" class="person" fromto="4.7 0.55 0.48 4.7 0.98 0.48" size="0.07"/>
+    <geom name="user_shin_l" class="person" fromto="4.5 1.02 0.46 4.5 1.06 0.06" size="0.06"/>
+    <geom name="user_shin_r" class="person" fromto="4.7 1.02 0.46 4.7 1.06 0.06" size="0.06"/>
+
+    <!-- Floor markings (sites are not physical: cameras and LiDAR do not see them) -->
+    <site name="dock_marker" type="box" pos="1.0 2.0 0.002" size="0.30 0.25 0.002" rgba="0.2 0.2 0.25 0.5"/>
+    <site name="drop_zone_marker" type="cylinder" pos="1.2 0.9 0.002" size="0.18 0.002" rgba="0.13 0.84 0.37 0.6"/>
+  </worldbody>
+</mujoco>

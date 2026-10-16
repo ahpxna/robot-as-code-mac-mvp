@@ -1,0 +1,14 @@
+# Default household scene for free-form instructions (cli --task "...").
+# Object positions are randomised on their surfaces from the seed.
+name: home
+world: apartment
+robot: helper_rover
+instruction: "Đi vào phòng khách, tìm chai nước trên bàn, lấy nó rồi mang đến cho tao."
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: red_bottle, type: bottle, color: red, support: coffee_table}
+  - {name: blue_cup, type: cup, color: blue, support: kitchen_table}
+  - {name: red_cup, type: cup, color: red, support: kitchen_counter, max_depth: 0.22}
+  - {name: green_apple, type: apple, color: green, support: desk}
+  - {name: yellow_can, type: can, color: yellow, support: side_table}
+time_limit: 300

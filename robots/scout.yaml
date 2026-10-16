@@ -1,0 +1,66 @@
+# A second robot built from the same description schema: a small inspection
+# rover with no arm. The same onboard software runs it; the planner only offers
+# the skills its hardware supports (navigate + perceive, no manipulate).
+name: scout
+description: >
+  Compact differential-drive inspection rover: two driven wheels, front and rear
+  casters, 2D LiDAR, RGB-D camera on a sensor mast, IMU, encoders, bumper, battery.
+
+base:
+  kind: differential_drive
+  chassis:
+    size: [0.36, 0.30, 0.10]
+    ground_clearance: 0.035
+    mass: 7.0
+    color: [0.85, 0.45, 0.10, 1]
+  battery:
+    mass: 1.5
+    capacity_wh: 60.0
+    nominal_voltage: 14.8
+    idle_power_w: 12.0
+    drive_efficiency: 0.75
+  wheels:
+    radius: 0.06
+    width: 0.03
+    track: 0.34
+    x: 0.0
+    mass: 0.35
+    friction: 1.2
+    motor: {max_speed: 10.0, max_torque: 2.5, kv: 4.0}
+  casters:
+    - {x: 0.14, radius: 0.025}
+    - {x: -0.14, radius: 0.025}
+  limits:
+    max_linear_speed: 0.5
+    max_angular_speed: 1.5
+    max_linear_accel: 0.8
+    max_angular_accel: 2.5
+
+sensors:
+  head_camera:
+    x: 0.10
+    z: 1.05
+    pitch_deg: 32
+    fovy_deg: 60
+    width: 320
+    height: 240
+    depth_noise_std: 0.002
+  lidar:
+    x: 0.12
+    z: 0.16
+    fov_deg: 270
+    beams: 271
+    range_min: 0.10
+    range_max: 8.0
+    rate_hz: 10
+    noise_std: 0.008
+  imu:
+    gyro_noise_std: 0.002
+    gyro_bias_std: 0.0005
+    accel_noise_std: 0.02
+  wheel_encoders:
+    counts_per_rev: 4096
+  bumper: {}
+
+control:
+  rate_hz: 50

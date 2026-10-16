@@ -1,0 +1,94 @@
+# Robot description as code.
+#
+# The MuJoCo model of this robot is GENERATED from this file
+# (robotcode.description.robot_mjcf). The control stack never reads simulator
+# ground truth about the robot: it only sees the sensors declared below through
+# the hardware abstraction layer (robotcode.hal).
+#
+# Frames: base frame origin is on the ground, under the centre of the drive
+# axle; +x forward, +y left, +z up. All lengths in metres, masses in kg.
+name: helper_rover
+description: >
+  Differential-drive household mobile manipulator: two driven wheels, front and
+  rear ball casters, vertical lift mast with telescoping arm and lateral wrist,
+  parallel-jaw gripper with finger force sensors, RGB-D head camera, 2D LiDAR,
+  IMU, wheel/joint encoders, bumper and a battery model.
+
+base:
+  kind: differential_drive
+  chassis:
+    size: [0.50, 0.40, 0.12]          # length, width, height
+    ground_clearance: 0.04
+    mass: 15.0                        # frame + motors + electronics
+    color: [0.16, 0.40, 0.76, 1]
+  battery:
+    mass: 4.0                         # mounted low inside the chassis
+    capacity_wh: 150.0
+    nominal_voltage: 24.0
+    idle_power_w: 22.0                # onboard computer + sensors
+    drive_efficiency: 0.75
+  wheels:
+    radius: 0.075
+    width: 0.035
+    track: 0.44                       # wheel centre to wheel centre
+    x: 0.0
+    mass: 0.6
+    friction: 1.2
+    motor: {max_speed: 9.0, max_torque: 6.0, kv: 10.0}   # rad/s, N*m, N*m per rad/s
+  casters:                            # passive ball casters (frictionless contact)
+    - {x: 0.19, radius: 0.03}
+    - {x: -0.19, radius: 0.03}
+  limits:
+    max_linear_speed: 0.45
+    max_angular_speed: 1.2
+    max_linear_accel: 0.6
+    max_angular_accel: 2.0
+
+arm:
+  kind: cartesian                     # lift (z) + telescoping reach (x) + wrist shift (y)
+  mast: {x: 0.17, height: 1.18, size: [0.06, 0.08]}
+  wrist_drop: 0.15                    # gripper hangs this far below the arm beam
+  joints:
+    lift:  {axis: z, range: [0.24, 1.12], max_speed: 0.30, kp: 6000, damping: 250, force: 400, mass: 0.6}
+    reach: {axis: x, range: [0.0, 0.45],  max_speed: 0.30, kp: 3000, damping: 120, force: 200, mass: 0.8}
+    side:  {axis: y, range: [-0.12, 0.12], max_speed: 0.20, kp: 2000, damping: 80,  force: 120, mass: 0.25}
+  stow: {lift: 0.45, reach: 0.0, side: 0.0}       # beam height / extension for driving
+  carry: {lift: 0.62, reach: 0.0, side: 0.0}      # with an object in the gripper
+
+gripper:
+  kind: parallel_jaw
+  max_opening: 0.12
+  finger: {length: 0.08, thickness: 0.012, height: 0.06, friction: 1.6, mass: 0.05}
+  kp: 600
+  force: 25.0
+  damping: 4.0
+  contact_threshold_n: 0.8            # finger force that counts as touching
+
+sensors:
+  head_camera:
+    x: 0.22
+    z: 1.32
+    pitch_deg: 38                     # downward tilt
+    fovy_deg: 60
+    width: 320
+    height: 240
+    depth_noise_std: 0.002            # metres at 1 m, grows with distance^2
+  lidar:
+    x: 0.20
+    z: 0.175
+    fov_deg: 270
+    beams: 271
+    range_min: 0.10
+    range_max: 8.0
+    rate_hz: 10
+    noise_std: 0.008
+  imu:
+    gyro_noise_std: 0.002             # rad/s
+    gyro_bias_std: 0.0005             # rad/s, constant per episode
+    accel_noise_std: 0.02
+  wheel_encoders:
+    counts_per_rev: 4096
+  bumper: {}
+
+control:
+  rate_hz: 50

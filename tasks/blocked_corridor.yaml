@@ -1,0 +1,17 @@
+# Something that is NOT on the map (a box left in the office, hidden behind the wall until the
+# robot reaches the door) blocks the direct route to the desk:
+# the LiDAR obstacle layer has to catch it and the planner has to route around it.
+name: blocked_corridor
+world: apartment
+robot: helper_rover
+instruction: "Find the red bottle in the kitchen and bring it to my desk."
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.05, 0.05, 0.15]}
+obstacles:
+  - {name: moving_box, type: box, pos: [6.3, 4.75, 0.2], size: [0.3, 0.22, 0.2]}
+objects:
+  - {name: red_bottle, type: bottle, color: red, support: kitchen_table}
+success:
+  - object_on: {object: red_bottle, surface: desk}
+  - robot_not_holding: true
+  - max_collisions: 0
+time_limit: 300

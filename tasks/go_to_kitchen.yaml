@@ -1,0 +1,10 @@
+name: go_to_kitchen
+world: apartment
+robot: helper_rover
+instruction: "Đi vào bếp"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects: []
+success:
+  - robot_in_room: kitchen
+  - max_collisions: 0
+time_limit: 120

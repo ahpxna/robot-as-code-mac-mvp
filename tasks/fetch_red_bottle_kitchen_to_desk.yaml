@@ -1,0 +1,16 @@
+# Grounding test: a red cup sits next to the red bottle; only the bottle may be moved.
+name: fetch_red_bottle_kitchen_to_desk
+world: apartment
+robot: helper_rover
+instruction: "Tìm chai nước màu đỏ trong phòng bếp rồi mang đến bàn làm việc."
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: red_bottle, type: bottle, color: red, support: kitchen_table}
+  - {name: red_cup, type: cup, color: red, support: kitchen_table}
+  - {name: blue_cup, type: cup, color: blue, support: kitchen_counter, max_depth: 0.22}
+success:
+  - object_on: {object: red_bottle, surface: desk}
+  - object_upright: red_bottle
+  - object_on: {object: red_cup, surface: kitchen_table}      # the distractor stays put
+  - robot_not_holding: true
+time_limit: 300

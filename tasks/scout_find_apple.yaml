@@ -1,0 +1,14 @@
+# Same world, same software, different robot: the arm-less scout can search
+# but must refuse to carry things.
+name: scout_find_apple
+world: apartment
+robot: scout
+instruction: "Tìm quả táo xanh"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: green_apple, type: apple, color: green, support: desk}
+  - {name: red_bottle, type: bottle, color: red, support: coffee_table}
+success:
+  - robot_reports_success: true
+  - max_collisions: 0
+time_limit: 200

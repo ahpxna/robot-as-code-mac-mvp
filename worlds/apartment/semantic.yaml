@@ -1,0 +1,71 @@
+# Semantic annotations of the apartment map (what a deployed robot would get
+# from a one-time "map + label rooms" session). Geometry is NOT duplicated
+# here: surfaces reference geoms in world.xml and the map builder reads their
+# footprint and height from there.
+#
+# Aliases are matched case- and accent-insensitively by the task parser and
+# are shown to the LLM planner as the allowed vocabulary.
+name: apartment
+world_file: world.xml
+
+map:
+  resolution: 0.05
+  lidar_resolution: 0.025
+  bounds: [-0.3, -0.3, 8.3, 7.3]      # xmin, ymin, xmax, ymax
+
+rooms:
+  living_room:
+    rect: [0.0, 0.0, 8.0, 3.6]
+    aliases: [living room, lounge, sitting room, phòng khách]
+    search_from: [2.6, 2.6]           # good spot to look around from
+  kitchen:
+    rect: [0.0, 3.6, 4.0, 7.0]
+    aliases: [kitchen, bếp, phòng bếp, nhà bếp, phòng ăn]
+    search_from: [1.0, 4.4]
+  office:
+    rect: [4.0, 3.6, 8.0, 7.0]
+    aliases: [office, study, workroom, phòng làm việc, văn phòng]
+    search_from: [5.0, 4.4]
+
+surfaces:
+  kitchen_table:
+    geom: kitchen_table_top
+    kind: table
+    aliases: [kitchen table, dining table, bàn bếp, bàn ăn]
+  kitchen_counter:
+    geom: kitchen_counter
+    kind: counter
+    aliases: [counter, kitchen counter, quầy bếp, kệ bếp, mặt bếp]
+  coffee_table:
+    geom: coffee_table_top
+    kind: table
+    aliases: [coffee table, living room table, bàn trà, bàn nước, bàn phòng khách]
+  side_table:
+    geom: side_table_top
+    kind: table
+    aliases: [side table, end table, bàn nhỏ, bàn cạnh sofa, bàn góc]
+  desk:
+    geom: desk_top
+    kind: table
+    aliases: [desk, my desk, work desk, office desk, bàn làm việc, bàn học]
+  tv_stand:
+    geom: tv_stand
+    kind: shelf
+    aliases: [tv stand, tv cabinet, kệ tivi, kệ tv]
+
+places:
+  dock:
+    pose: [1.0, 2.0, 0.0]
+    aliases: [dock, charger, charging station, home base, trạm sạc, đế sạc, chỗ sạc]
+  drop_zone:
+    pose: [1.2, 0.9]
+    radius: 0.18
+    kind: floor_spot
+    aliases: [drop zone, green spot, green zone, target, goal, đích, điểm đích, vùng xanh, chỗ màu xanh]
+
+user:
+  position: [4.6, 0.5]
+  handover_surface: side_table        # "bring it to me" = put it within the user's reach
+  aliases: [me, myself, user, tôi, tao, tớ, mình, em, anh, chị, bố, mẹ]
+
+start_pose: [1.0, 2.0, 0.0]           # robot boots on the dock
