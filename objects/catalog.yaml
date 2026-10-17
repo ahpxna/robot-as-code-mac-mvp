@@ -35,10 +35,28 @@ colors:
   blue:   {rgba: [0.10, 0.30, 0.90, 1], aliases: [blue, xanh dương, xanh biển, xanh da trời, màu xanh dương]}
   green:  {rgba: [0.20, 0.72, 0.15, 1], aliases: [green, xanh lá, xanh lá cây, màu xanh lá]}
   yellow: {rgba: [0.95, 0.80, 0.10, 1], aliases: [yellow, vàng, màu vàng]}
+  # Unsaturated colours: no hue to segment, so only the learned detector can find these.
+  white:  {rgba: [0.92, 0.92, 0.90, 1], aliases: [white, trắng, màu trắng]}
+  black:  {rgba: [0.07, 0.07, 0.08, 1], aliases: [black, đen, màu đen]}
 
 perception:
+  # Which object detector the robot runs: color | learned. Overridden by a robot's own
+  # `perception.detector` (robots/*.yaml) and by --detector on the command line.
+  detector: color
+  min_pixels: 12
+  max_range: 4.0
+  # color: HSV segmentation of the colours above
   min_saturation: 0.50
   min_value: 0.18
   hue_tolerance_deg: 14
-  min_pixels: 12
-  max_range: 4.0
+  # learned: open-vocabulary OWLv2 boxes + the same depth geometry (pip install -e '.[vision]').
+  # Text queries are built from every colour x type: template filled with their `prompts`
+  # (English; default: the colour/type name -- the model's text encoder is English-only).
+  learned:
+    model: google/owlv2-base-patch16-ensemble
+    device: auto                    # auto | mps | cuda | cpu
+    dtype: auto                     # auto = float16 on mps/cuda (same accuracy, faster), float32 on cpu
+    image_size: 960                 # model input (square); 960 is the model's native size
+    template: "a photo of a {color} {type}"
+    score_threshold: 0.03           # min. confidence of a box for its best query
+    type_weight: 0.03               # model type log-odds vs. metric size fit (size dominates)

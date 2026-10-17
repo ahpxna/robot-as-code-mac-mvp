@@ -92,3 +92,7 @@ sensors:
 
 control:
   rate_hz: 50
+
+# Onboard object detector (default: objects/catalog.yaml perception.detector; CLI --detector wins):
+# perception:
+#   detector: learned               # color | learned (OWLv2, needs pip install -e '.[vision]')

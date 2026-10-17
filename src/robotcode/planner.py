@@ -68,6 +68,20 @@ def strip_accents(text: str) -> str:
     return "".join(out)
 
 
+def _marks(ch: str) -> set[str]:
+    """Diacritics on one NFC character ('đ' counts as d + stroke)."""
+    if ch == "đ":
+        return {"stroke"}
+    return {c for c in unicodedata.normalize("NFD", ch) if unicodedata.category(c) == "Mn"}
+
+
+def accents_agree(typed: str, alias: str) -> bool:
+    """Every diacritic the user typed is also on the alias, character by character ('den', 'đen' and
+    'phòng khach' agree with 'đen' / 'phòng khách'; 'đến' does not agree with 'đen'). Both strings are
+    folded and equal after strip_accents."""
+    return all(_marks(t) <= _marks(a) for t, a in zip(typed, alias))
+
+
 @dataclass
 class Mention:
     start: int
@@ -123,8 +137,12 @@ class Vocabulary:
         """Longest match wins; on equal length an exact (accented) match beats an accent-free one.
 
         Accent-free matching lets people type without diacritics, but folds distinct words together
-        ('tới'/'tôi' -> 'toi', 'tớ'/'to'), so an accent-free *user* pronoun only counts after
-        'cho' / 'for' / 'giúp' ('mang cho toi', 'bring it for me')."""
+        ('đến'/'đen' -> 'den', 'tới'/'tôi' -> 'toi', 'tớ'/'to'). So an accent-free match only counts
+        where the diacritics the user did type agree with the alias ('den' matches 'đen', 'đến' does
+        not), an accent-free *user* pronoun only counts after 'cho' / 'for' / 'giúp'
+        ('mang cho toi', 'bring it for me'), and an accent-free object word that is also a direction
+        marker reads as the marker right before a destination ('mang den cho tao' = 'mang đến cho tao',
+        'lon den den ban' = 'lon đen đến bàn')."""
         t1 = fold(text)
         t2 = strip_accents(t1)
         candidates = []
@@ -132,6 +150,8 @@ class Vocabulary:
             for exact, pattern, hay in ((True, alias, t1), (False, strip_accents(alias), t2)):
                 for m in re.finditer(rf"(?<!\w){re.escape(pattern)}(?!\w)", hay):
                     if not exact:
+                        if not accents_agree(t1[m.start():m.end()], alias):
+                            continue
                         if kind == "pronoun" and pattern == "do":
                             continue
                         if kind == "user" and t1[m.start():m.end()] != alias:
@@ -141,12 +161,20 @@ class Vocabulary:
                     candidates.append((-(m.end() - m.start()), 0 if exact else 1, m.start(), m.end(), kind, value))
         taken = [False] * len(t1)
         found: list[Mention] = []
-        for _, _, start, end, kind, value in sorted(candidates):
+        markers: list[Mention] = []
+        for _, approx, start, end, kind, value in sorted(candidates):
             if any(taken[start:end]):
                 continue
             for i in range(start, end):
                 taken[i] = True
             found.append(Mention(start, end, kind, value))
+            if approx and kind in ("type", "color") and t2[start:end] in DEST_MARKERS:
+                markers.append(found[-1])
+        places = {m.start for m in found if m.kind in ("room", "surface", "surface_kind", "place", "user")}
+        for m in markers:
+            nxt = re.match(r"\W*(\w+)", t2[m.end:])
+            if nxt and (nxt.group(1) in ("cho", "for") or m.end + nxt.start(1) in places):
+                found.remove(m)
         return sorted(found, key=lambda m: m.start)
 
 

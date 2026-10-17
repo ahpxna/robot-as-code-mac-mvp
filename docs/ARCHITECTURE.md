@@ -22,7 +22,8 @@ referee that scores episodes.
  stack.py   RobotStack (50 Hz)  ── localization.py   wheel/gyro odometry + LiDAR scan matching (SDF)
         │                       ── navigation.py     costmap + LiDAR obstacle layer, Dijkstra, pure pursuit,
         │                                            collision forecast, stall detection, docking
-        │                       ── perception.py     RGB-D colour segmentation -> 3D -> shape classification,
+        │                       ── perception.py     RGB-D detector (colour segmentation, or OWLv2 boxes from
+        │                                            perception_learned.py) -> 3D -> shape classification,
         │                                            object memory (WorldModel)
         │                       ── manipulation.py   joint trajectories, IK, force-sensed grasp checks
         │                       ── safety.py         bumper, tilt, battery
@@ -44,7 +45,7 @@ referee that scores episodes.
 | `robots/*.yaml` | Robot description: chassis, battery, wheels + motor limits, casters, arm joints (range, speed, gain, force), gripper, sensors (pose, FOV, rates, noise), control rate. `description.py` generates the MJCF from it. |
 | `worlds/<name>/world.xml` | Static environment (walls, furniture, the user). |
 | `worlds/<name>/semantic.yaml` | Map annotations: rooms, surfaces (referencing geoms, so geometry is not duplicated), places, the user, aliases in Vietnamese and English. |
-| `objects/catalog.yaml` | Object types (shape, size, mass, friction) and colours, plus perception thresholds. |
+| `objects/catalog.yaml` | Object types (shape, size, mass, friction) and colours, plus perception settings: which detector runs (`perception.detector: color \| learned`), colour thresholds, and the learned detector's model, device, input size and thresholds (`perception.learned`). |
 | `tasks/*.yaml` | Scenario: world, robot, start pose (+ jitter), objects (+ randomisation), unmapped obstacles, instruction, success criteria, time limit. |
 | `build/` (generated) | `maps/*.npz/.pgm` prior map, `scenes/*.xml` exact MJCF of every run. |
 | `artifacts/` (generated) | Benchmark results (JSON). |
@@ -65,7 +66,8 @@ A run is fully determined by `(task file, seed)`.
 * **Real perception.** Objects are found in rendered RGB-D images: HSV colour
   segmentation, depth back-projection with the camera intrinsics, transform via
   kinematics + localisation, then height/width/taper classification
-  (bottle vs cup vs can vs apple). Error is typically < 1 cm.
+  (bottle vs cup vs can vs apple). Error is typically < 1 cm. See
+  [Perception](#perception) for the learned, open-vocabulary alternative.
 * **Real localisation.** The robot is told only its nominal start pose; the true
   pose is jittered. Odometry (encoders + gyro with bias) is corrected by
   aligning each LiDAR scan to a *signed* distance field of the map. (An unsigned
@@ -78,6 +80,119 @@ A run is fully determined by `(task file, seed)`.
 * **Generality.** Skills declare the capabilities they need (`navigate`,
   `perceive`, `manipulate`); the planner refuses plans the robot cannot execute.
   `robots/scout.yaml` (no arm) runs the same software.
+
+## Perception
+
+Two detectors implement the same `detect(frame, pose, joints, exclude) -> list[Detection]`,
+so skills, the world model, navigation and manipulation do not know which one runs.
+Both end in the same geometric back end (`GeometricDetector` in `perception.py`):
+pixels of one object + depth -> back-projection with the camera intrinsics -> map
+frame (camera kinematics + localisation) -> support surface from the prior map ->
+height, width across the view ray, top/middle taper -> fit against every catalog
+type's dimensions -> centre from the visible top surface.
+
+| | `color` (default) | `learned` |
+|---|---|---|
+| Which pixels are one object | HSV mask per catalog colour, connected components | OWLv2 box per text query; inside the box: the depth layer of its centre, points within 10 cm of it, above the support surface |
+| Colour | the mask's hue | the model's best colour query (any colour the text encoder can name, e.g. white, black) |
+| Type | metric size + shape fit | metric size + shape fit, with the model's type scores as a weak prior (`type_weight`) |
+| Dependencies | numpy/scipy | `pip install -e '.[vision]'` (torch, transformers); ~600 MB weights, cached after first use |
+| Code | `perception.ObjectDetector` | `perception_learned.LearnedObjectDetector` |
+
+Selection, highest precedence first: `--detector` (cli, evaluate) > robot YAML
+`perception.detector` > `objects/catalog.yaml` `perception.detector` > `color`.
+`perception.learned` in the catalog sets the model (`google/owlv2-base-patch16-ensemble`),
+device (`auto`: MPS on Apple Silicon, CUDA, else CPU), dtype (`auto`: float16 on
+a GPU, float32 on CPU), input size (960 px), prompt template and thresholds.
+
+Text queries are every catalog colour x type, filled into
+`"a photo of a {color} {type}"`. Types and colours may list English `prompts`
+(variants, e.g. `[cup, mug]`); the default is the entry's name. The `aliases`
+are not used as queries: they mix Vietnamese and English for the language
+planner, and the model's text encoder only knows English. The text embeddings
+are computed once; each frame costs one image-encoder pass.
+
+**Why metric size decides the type.** The simulated objects are flat-shaded
+primitives: a red cylinder scores higher as "cup" than as "bottle", a blue cup
+as "can". With the model's type label alone (`type_weight` very large) recall
+drops from 100 % to 45 % on the benchmark frames below; with depth geometry
+deciding and the model breaking near-ties, no frame has a wrong type. The model
+contributes what geometry cannot: *that* something is an object worth
+measuring, where it is in the image, and its colour, including colours with no
+hue to segment by.
+
+### Measured (Apple M1 Pro, 2026-10-16)
+
+Frame level, `python -m robotcode.perception_bench --episodes 5`: 7 tasks x 5 seeds, the
+160 frames the robot captured in `look()`; both detectors see the *same* frames and are
+scored against simulator ground truth. Correct = within 10 cm of a ground-truth object
+with the same type and colour; recall counts objects in view (centre in the image, not
+occluded, 0.3-3 m). Error is the 3D distance of the object centre.
+
+| | `color` | `learned` (OWLv2, fp16 on MPS) |
+|---|---|---|
+| Precision | 99.3 % (1 wrong label: a cup cut off at the image edge measured as an apple) | 100 % |
+| Recall (objects in view) | 100 % | 100 % |
+| False positives | 0 | 0 |
+| Position error median / p95 / max | 6.3 / 16.4 / 27.5 mm | 6.3 / 19.8 / 27.7 mm |
+| ... with the true robot pose (perception only) | 6.6 / 16.7 / 26.2 mm | 6.6 / 19.8 / 28.1 mm |
+| Latency per frame, mean / p95 | 6 / 7 ms (CPU) | 411 / 424 ms (GPU) |
+| First call | - | model load 1.7-6.5 s + ~1 s warm-up, once per process |
+| White cup / black can (`tasks/perception/`, 19 frames) | recall 0 % (no hue) | recall 100 %, median error 7.1 mm |
+
+The median is ~6 mm for both (the geometry is shared); the tail (p95/max) is
+objects partly outside the image or 2-3 m away, where both cut out the same
+partial top surface.
+
+Variants of the learned detector on the same 160 frames:
+
+| Variant | Recall | Precision | Latency mean / p95 | |
+|---|---|---|---|---|
+| default: 960 px, float16, threshold 0.03 | 100 % | 100 % | 411 / 424 ms | |
+| float32 | 100 % | 100 % | 616 / 1103 ms | identical detections to float16 |
+| 640 px input | 96 % | 99 % | 191 / 209 ms | misses the apple at range |
+| model's type label decides (`type_weight` 1000) | 45 % | 96 % | | primitives look alike to the model |
+| score threshold 0.02 | 100 % | 99 % | | first false positives |
+
+Closed loop, `python -m robotcode.evaluate --episodes 20 --detector color|learned`
+(20 seeds per task; the learned run uses 4 workers sharing the GPU, so
+`det[ms]` there is 0.6-1.3 s per frame):
+
+| Task | `color` | `learned` |
+|---|---|---|
+| `apple_desk_to_coffee_table` | 20/20 | 20/20 |
+| `blocked_corridor` | 20/20 | 20/20 |
+| `cup_to_drop_zone` | 20/20 | 20/20 |
+| `deliver_bottle_to_user` | 20/20 | 20/20 |
+| `fetch_red_bottle_kitchen_to_desk` | 20/20 | 20/20 |
+| `go_to_kitchen` (no perception) | 20/20 | 20/20 |
+| `scout_find_apple` | 20/20 | 20/20 |
+| **Default benchmark** | **140/140** | **140/140** |
+| Collisions / false successes | 0 / 0 | 0 / 0 |
+| Wall time | 149 s (8 workers) | 455 s (4 workers) |
+| `perception/white_cup_to_desk` (white cup, black can distractor) | 0/20 | 17/20 |
+
+The three learned failures on the white cup are honest ones ("failed to pick up
+the white cup after 2 attempts"): from the grasp approach pose the cup sits at
+the bottom edge of the image, only a white sliver against the white floor is
+visible, and OWLv2 gives it a score below threshold (0.028 at 0.05; 0.03 is the
+lowest threshold without false positives in the benchmark). The colour
+detector tolerates such slivers because any coloured patch is enough;
+the learned one needs to recognise the object.
+
+Limits of the learned detector today:
+
+* Boxes, not masks: the object is cut out of its box with depth (layer, radius,
+  above the support), so two objects touching in 3D inside one box can merge.
+* A type still needs catalog dimensions (shape, radius, height) to get a 3D
+  centre and pass the size check: open vocabulary for appearance, not yet for
+  geometry of unknown objects.
+* OWLv2 is trained on photographs; these renders are untextured primitives.
+  Real images will look more like its training data, simulated ones less.
+* Objects cut off by the image border are found less often than by the colour
+  detector (see the white-cup failures above).
+* Detection runs synchronously inside `look()`; the simulated clock does not
+  advance meanwhile. On a robot `look()` would hold still ~0.5 s longer.
 
 ## Sim-to-real path
 
@@ -103,8 +218,11 @@ independent safety layer.
 
 ## Limits today (honest list)
 
-* Colour-based detector: objects must have distinctive saturated colours from
-  the catalog; no learned detector / VLM yet.
+* Perception knows only catalog types: the default colour detector needs
+  saturated catalog colours; the learned detector (OWLv2, optional) handles any
+  nameable colour but still needs each type's dimensions, needs most of the
+  object in view, and is ~60x slower per frame (0.4 s on an M1 Pro GPU). No
+  people detection, no VLM.
 * Cartesian arm (lift, reach, wrist shift) with a parallel gripper: side grasps
   of upright objects on tables and counters; no floor picking, no 6-DoF arm,
   no lying objects.
@@ -117,8 +235,10 @@ independent safety layer.
 
 ## Next milestones
 
-1. Learned perception: YOLO / OWL-ViT / a VLM behind `ObjectDetector.detect()`
-   (open-vocabulary objects, people).
+1. Learned perception, next steps: masks (SAM) instead of box + depth cut-out,
+   types without catalog dimensions (size from the point cloud), people, a VLM
+   for attributes; domain randomisation so simulated images look less synthetic.
+   (Open-vocabulary OWLv2 boxes are in: `--detector learned`.)
 2. SLAM: build the map from LiDAR instead of from the world file.
 3. 6-DoF arm description + MoveIt-style collision-aware motion planning
    (the IK in `kinematics.py` is already generic).

@@ -50,6 +50,22 @@ Optional LLM planner (writes a JSON plan of skill calls that is validated
 before anything moves): `pip install -e '.[llm]'`, set `OPENAI_API_KEY`, add
 `--planner llm`. It costs API usage; the rule planner is the default.
 
+Optional learned object detector (open-vocabulary OWLv2, runs on the Apple-Silicon
+GPU via MPS, or CPU; no server):
+
+```bash
+pip install -e '.[vision]'                       # torch + transformers; ~600 MB of weights download on first use
+python -m robotcode.cli --headless --detector learned --task "Mang chai nước màu đỏ đến cho tao"
+python -m robotcode.cli --headless --detector learned --scenario tasks/perception/white_cup_to_desk.yaml
+python -m robotcode.evaluate --episodes 20 --detector learned        # 4 workers: each loads the model
+python -m robotcode.perception_bench --episodes 5     # both detectors on the same frames vs ground truth
+```
+
+The detector is chosen by `perception.detector: color | learned` in
+`objects/catalog.yaml` (default `color`), a robot's own `perception.detector`
+in `robots/*.yaml`, or `--detector` (highest precedence). See
+[docs/ARCHITECTURE.md#perception](docs/ARCHITECTURE.md#perception).
+
 ## What is in the box
 
 | Layer | Implementation |
@@ -59,7 +75,7 @@ before anything moves): `pip install -e '.[llm]'`, set `OPENAI_API_KEY`, add
 | Physics | MuJoCo 3: gravity, friction cones, contacts, torque-limited motors, joint limits |
 | Localisation | wheel + gyro odometry, LiDAR scan matching on a signed distance field (mm-level at rest) |
 | Navigation | costmap + live LiDAR obstacle layer, Dijkstra planner, pure pursuit, collision forecast, stall detection, replanning |
-| Perception | RGB-D colour segmentation → 3D points → shape classification (bottle / cup / can / apple), object memory |
+| Perception | RGB-D detector → 3D points → shape classification (bottle / cup / can / apple), object memory. Detector: HSV colour segmentation (default) or open-vocabulary OWLv2 boxes (`--detector learned`) with the same depth geometry |
 | Manipulation | IK from the robot description, collision-aware approach selection, force-sensed grasp check, carry monitoring, camera-verified placing |
 | Agent | VN/EN rule planner (accent-insensitive), optional LLM planner, executor with recovery, honest mission report |
 | Evaluation | referee: success criteria per task, collisions, object bumps, false successes, localisation error, energy |
@@ -82,16 +98,35 @@ sensor noise vary with the seed):
 140 episodes run in about 5 minutes on 8 cores (MuJoCo runs ~10x faster than real time).
 Max localisation error over all episodes: 7 mm.
 
+### Colour vs learned detector
+
+Same benchmark with `--detector learned` (OWLv2 boxes + the same depth geometry), and
+both detectors on the same 160 camera frames (`python -m robotcode.perception_bench --episodes 5`):
+
+| | `color` (default) | `learned` |
+|---|---|---|
+| Default benchmark, 7 tasks x 20 seeds | 140/140 | 140/140 |
+| Collisions / false successes | 0 / 0 | 0 / 0 |
+| `tasks/perception/white_cup_to_desk` (white cup, black can) | 0/20 | 17/20 |
+| Frame precision / recall | 99.3 % / 100 % | 100 % / 100 % |
+| Object position error, median / p95 | 6.3 / 16.4 mm | 6.3 / 19.8 mm |
+| Time per frame (M1 Pro) | 6 ms (CPU) | 411 ms (GPU, MPS, float16) |
+
+Details, variants (input size, precision, thresholds) and failure analysis:
+[docs/ARCHITECTURE.md#perception](docs/ARCHITECTURE.md#perception).
+
 ## Repository
 
 ```
 robots/            robot descriptions (YAML)            worlds/apartment/  world.xml + semantic.yaml
 objects/           object catalog                       tasks/             missions + success criteria
+                                                        tasks/perception/  tasks only the learned detector can do
 src/robotcode/
   description.py   YAML -> MJCF generator               scene.py           world + robot + objects -> model
   mapping.py       prior map (occupancy, LiDAR SDF)     hal.py             RobotInterface + SimRobot
   kinematics.py    FK / IK / footprint                  localization.py    odometry + scan matching
-  navigation.py    costmap, planner, follower, docking  perception.py      RGB-D detector + world model
+  navigation.py    costmap, planner, follower, docking  perception.py      RGB-D detectors + world model
+  perception_learned.py  OWLv2 open-vocabulary detector  perception_bench.py  detector comparison vs ground truth
   manipulation.py  arm + gripper control                safety.py          bumper / tilt / battery
   skills.py        skill library (LLM tool list)        planner.py         VN/EN rule planner
   llm_planner.py   optional LLM planner + validation    agent.py           mission executor

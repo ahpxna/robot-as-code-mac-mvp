@@ -6,6 +6,7 @@
     mjpython -m robotcode.cli --task "..."                             # 3D viewer (macOS needs mjpython)
     mjpython -m robotcode.cli --interactive                            # viewer + type tasks one after another
     python -m robotcode.cli --scenario tasks/fetch_red_bottle_kitchen_to_desk.yaml --headless
+    python -m robotcode.cli --headless --detector learned --task "..."  # OWLv2 detector (pip install -e '.[vision]')
 """
 from __future__ import annotations
 
@@ -47,6 +48,8 @@ def main(argv=None) -> int:
     parser.add_argument("--smoke", action="store_true", help="build the scene and run 100 physics steps")
     parser.add_argument("--interactive", action="store_true", help="keep the robot running and read tasks from stdin")
     parser.add_argument("--planner", choices=["rules", "llm"], default="rules")
+    parser.add_argument("--detector", choices=["color", "learned"], default=None,
+                        help="object detector (default: perception.detector in the robot/catalog YAML, else color)")
     parser.add_argument("--report", help="write the episode report (JSON) to this file")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
@@ -79,7 +82,7 @@ def main(argv=None) -> int:
 
     if args.smoke:
         from .runtime import Simulation
-        sim = Simulation(task, seed=args.seed, verbose=False)
+        sim = Simulation(task, seed=args.seed, verbose=False, detector=args.detector)
         for _ in range(10):
             sim.step()
         print(f"SMOKE OK: scene '{task['name']}' built ({sim.model.nbody} bodies, {sim.model.nu} actuators, "
@@ -96,7 +99,7 @@ def main(argv=None) -> int:
     from .evaluate import run_episode
     result, sim = run_episode(task, args.seed, instruction=instruction, planner=args.planner,
                               verbose=not args.quiet, viewer=viewer, realtime=viewer and not args.fast,
-                              keep_open=True)
+                              keep_open=True, detector=args.detector)
     sys.stdout.flush()
     print(f"\nRESULT: robot reports {'SUCCESS' if result.robot_success else 'FAILURE'}: {result.message}")
     if result.checks:
@@ -123,7 +126,7 @@ def interactive(task: dict, args, viewer: bool) -> int:
     from .runtime import Simulation
 
     sim = Simulation({**task, "success": []}, seed=args.seed, verbose=True, viewer=viewer,
-                     realtime=viewer and not args.fast)
+                     realtime=viewer and not args.fast, detector=args.detector)
     planner = _make_planner(args, task)
     inbox: queue.Queue[str | None] = queue.Queue()
 

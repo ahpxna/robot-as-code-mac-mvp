@@ -59,7 +59,7 @@ Lệnh không làm được (ví dụ “dọn cả nhà”) sẽ bị từ ch�
 ## Kiểm thử và đo lường
 
 ```bash
-python -m unittest discover -s tests -v        # 28 test: đơn vị, vật lý, nhiệm vụ đầy đủ
+python -m unittest discover -s tests -v        # 39 test: đơn vị, vật lý, nhiệm vụ đầy đủ, nhận diện (1 test cần [vision] tự bỏ qua nếu chưa cài)
 python -m robotcode.evaluate --episodes 20     # mỗi nhiệm vụ 20 lần với vị trí ngẫu nhiên
 ```
 
@@ -72,7 +72,7 @@ Bảng kết quả có: tỉ lệ thành công, số lần robot báo thành cô
 | Kích thước, khối lượng, motor, cảm biến, nhiễu cảm biến của robot | `robots/helper_rover.yaml` (hoặc tạo robot mới, ví dụ `robots/scout.yaml` — robot không tay) |
 | Nhà, nội thất | `worlds/apartment/world.xml` |
 | Tên phòng, bàn, địa điểm, từ đồng nghĩa tiếng Việt/Anh | `worlds/apartment/semantic.yaml` |
-| Loại đồ vật, màu, khối lượng | `objects/catalog.yaml` |
+| Loại đồ vật, màu, khối lượng, chọn bộ nhận diện | `objects/catalog.yaml` |
 | Nhiệm vụ, vị trí đồ vật (có ngẫu nhiên), tiêu chí thành công | `tasks/*.yaml` |
 
 Mỗi lượt chạy được xác định hoàn toàn bởi (file nhiệm vụ, seed). File MuJoCo sinh ra nằm ở `build/scenes/`, bản đồ ở `build/maps/` (có ảnh `.pgm` kiểu Nav2).
@@ -87,9 +87,31 @@ mjpython -m robotcode.cli --planner llm --task "Lấy giúp tôi cái cốc màu
 
 LLM chỉ được viết **kế hoạch gồm các skill có sẵn**; kế hoạch được kiểm tra (skill có tồn tại không, địa điểm/đồ vật có trên bản đồ/catalog không, robot có đủ phần cứng không) trước khi robot cử động. LLM không bao giờ điều khiển motor trực tiếp. Dùng API có thể phát sinh chi phí.
 
+## Bộ nhận diện học sâu (tuỳ chọn)
+
+Mặc định robot tìm đồ bằng **màu** (HSV) + hình dạng từ ảnh độ sâu. Có thể đổi sang
+**OWLv2** — mô hình nhận diện "từ vựng mở": gõ chữ gì (vd. "a photo of a white cup")
+nó tìm khung chứa vật đó trong ảnh; phần độ sâu → toạ độ 3D → kiểm tra kích thước
+vẫn dùng chung với bộ nhận diện màu. Chạy trên GPU của Mac (MPS), không cần server.
+
+```bash
+python -m pip install -e '.[vision]'        # torch + transformers; lần đầu tải ~600 MB weights
+python -m robotcode.cli --headless --detector learned --task "Mang chai nước màu đỏ đến cho tao"
+python -m robotcode.cli --headless --detector learned --scenario tasks/perception/white_cup_to_desk.yaml
+python -m robotcode.evaluate --episodes 20 --detector learned       # so sánh với --detector color
+python -m robotcode.perception_bench --episodes 5                   # 2 bộ nhận diện trên cùng ảnh, so với vị trí thật
+```
+
+Chọn bộ nhận diện: `--detector` > `perception.detector` trong `robots/*.yaml` >
+`perception.detector` trong `objects/catalog.yaml` (mặc định `color`).
+
+Điểm khác biệt: đồ **không có màu nổi bật** (trắng, đen) thì bộ màu không thấy, OWLv2
+thấy được (`tasks/perception/white_cup_to_desk.yaml`). Đổi lại chậm hơn (~0,4–0,5 s/ảnh
+so với ~8 ms). Kết quả đo chi tiết: README và `docs/ARCHITECTURE.md#perception`.
+
 ## Giới hạn hiện tại
 
-- Nhận diện theo màu + hình dạng (chưa có YOLO/VLM): đồ vật phải có màu trong catalog.
+- Nhận diện chỉ biết các loại đồ trong catalog (cần kích thước để tính vị trí 3D). Bộ màu cần màu đậm; OWLv2 (tuỳ chọn) nhận được màu bất kỳ nhưng chậm hơn và cần nhìn thấy gần hết vật. Chưa nhận diện người, chưa có VLM.
 - Tay kiểu Cartesian + kẹp song song: gắp đồ đứng trên bàn/quầy; chưa gắp dưới sàn, chưa có tay 6 bậc.
 - Bản đồ lấy từ hình học ngôi nhà (như bản vẽ mặt bằng), chưa tự lập bản đồ bằng SLAM.
 - Chưa có ROS 2 / robot thật; ranh giới để chuyển sang phần cứng là `hal.py` (bảng ánh xạ ROS 2 trong `docs/ARCHITECTURE.md`).

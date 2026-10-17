@@ -19,13 +19,13 @@ from .manipulation import Arm, Gripper
 from .mapping import PriorMap
 from .math_utils import to_map
 from .navigation import DiffDriveController, Navigator
-from .perception import ObjectDetector, WorldModel
+from .perception import WorldModel, make_detector
 from .safety import SafetyMonitor
 
 
 class RobotStack:
     def __init__(self, hal: RobotInterface, spec: dict, prior: PriorMap, catalog: dict, *,
-                 initial_pose=None, log: Callable[[str], None] | None = None):
+                 initial_pose=None, log: Callable[[str], None] | None = None, detector: str | None = None):
         self.hal, self.spec, self.prior, self.catalog = hal, spec, prior, catalog
         self.dt = 1.0 / spec.get("control", {}).get("rate_hz", 50)
         self._log = log or (lambda msg: None)
@@ -35,7 +35,7 @@ class RobotStack:
         self.nav = Navigator(self)
         self.arm = Arm(self) if spec.get("arm") else None
         self.gripper = Gripper(self) if has_gripper(spec) else None
-        self.detector = ObjectDetector(self) if "head_camera" in spec["sensors"] else None
+        self.detector = make_detector(self, detector) if "head_camera" in spec["sensors"] else None
         self.world = WorldModel(prior, catalog)
         self.safety = SafetyMonitor(self)
         self.state: RobotState | None = None

@@ -1,0 +1,17 @@
+# Objects without a distinctive colour: the HSV colour detector cannot segment white or
+# black, so only `--detector learned` can do this task. Kept out of tasks/*.yaml (the
+# default benchmark):  python -m robotcode.evaluate --detector learned --task tasks/perception/white_cup_to_desk.yaml
+name: white_cup_to_desk
+world: apartment
+robot: helper_rover
+instruction: "Find the white cup in the living room and bring it to my desk"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: white_cup, type: cup, color: white, support: coffee_table}
+  - {name: black_can, type: can, color: black, support: coffee_table}
+success:
+  - object_on: {object: white_cup, surface: desk}
+  - object_upright: white_cup
+  - object_on: {object: black_can, surface: coffee_table}     # the distractor stays put
+  - robot_not_holding: true
+time_limit: 300

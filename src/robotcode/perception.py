@@ -1,12 +1,20 @@
 """Perception from the RGB-D head camera, plus the robot's memory of objects.
 
-ObjectDetector is a classical pipeline that runs on pixels only:
+Two detectors share one geometric back end (GeometricDetector) and the same
+`detect(frame, pose, joints, exclude) -> list[Detection]` signature:
+
+* ObjectDetector (`color`, default) -- a classical pipeline on pixels only:
   colour segmentation (HSV) -> connected components -> back-projection with the
   depth image and camera intrinsics -> transform to the map frame (camera
   kinematics + localisation) -> geometric classification against the object
   catalog (height / width) -> object centre from the visible top surface.
-It can be swapped for a learned detector (YOLO, OWL-ViT, a VLM) behind the same
-`detect()` signature.
+* LearnedObjectDetector (`learned`, perception_learned.py) -- an open-vocabulary
+  model (OWLv2) proposes 2D boxes for text queries built from the catalog; the
+  same depth back-projection and geometry turn each box into a 3D object.
+  Optional dependency: pip install -e '.[vision]'.
+
+Which one runs: `make_detector()` (CLI --detector > robot YAML perception.detector
+> catalog perception.detector > color).
 
 WorldModel keeps beliefs about objects: where each was last seen, what the
 robot is holding, and forgets objects that are no longer where it expected.
@@ -14,14 +22,18 @@ robot is holding, and forgets objects that are no longer where it expected.
 from __future__ import annotations
 
 import colorsys
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import ndimage
 
+from .config import ConfigError
 from .hal import RGBDFrame
-from .mapping import PriorMap, normalize_text
+from .mapping import PriorMap, Surface, normalize_text
 from .math_utils import to_map
+
+DETECTORS = ("color", "learned")
 
 
 @dataclass
@@ -60,6 +72,22 @@ class ObjectBelief:
         return f"{self.color} {self.type}"
 
 
+@dataclass
+class Blob:
+    """One candidate object's pixels lifted to the map frame, with its measured size and shape."""
+    xy: np.ndarray              # (N, 2) points, map frame
+    z: np.ndarray               # (N,) point heights
+    center_guess: np.ndarray    # median of xy
+    surface: Surface | None     # what it stands on (None = floor)
+    support_z: float
+    top_z: float
+    height: float
+    width: float                # extent across the viewing direction
+    taper: float | None         # top width / middle width: ~0.7 sphere, ~1 cylinder
+    bearing: np.ndarray         # unit vector camera -> object, map frame
+    pixels: int
+
+
 def _hsv(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     x = rgb.astype(np.float32) / 255.0
     r, g, b = x[..., 0], x[..., 1], x[..., 2]
@@ -71,16 +99,21 @@ def _hsv(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return (h * 60.0) % 360.0, s, mx
 
 
-class ObjectDetector:
+class GeometricDetector:
+    """Shared back end: an object's pixels -> 3D points in the map frame -> size and shape -> catalog type.
+
+    Subclasses decide which pixels belong to one object (`_detect`); this class turns them into Detections.
+    """
+
+    kind = ""
+    MAX_FIT_ERROR = 0.9
+
     def __init__(self, ctx):
         self.ctx = ctx
         cat = ctx.catalog
         p = cat.get("perception", {})
-        self.min_s, self.min_v = p.get("min_saturation", 0.5), p.get("min_value", 0.18)
-        self.hue_tol = p.get("hue_tolerance_deg", 14)
         self.min_pixels = p.get("min_pixels", 12)
         self.max_range = p.get("max_range", 4.0)
-        self.hues = {name: colorsys.rgb_to_hsv(*c["rgba"][:3])[0] * 360.0 for name, c in cat["colors"].items()}
         self.types = {}
         self.shapes = {}
         for name, t in cat["types"].items():
@@ -88,48 +121,35 @@ class ObjectDetector:
             self.types[name] = (height, 2 * t["radius"], t["radius"])
             self.shapes[name] = t["shape"]
         self.frames = 0
+        self.busy_s = 0.0           # total time spent in detect()
 
     def detect(self, frame: RGBDFrame, pose: np.ndarray, joints: dict[str, float],
                exclude: list[np.ndarray] | None = None) -> list[Detection]:
+        start = time.perf_counter()
         self.frames += 1
         cam_pos, cam_rot = self.ctx.kin.camera(frame.camera, joints)
-        hue, sat, val = _hsv(frame.rgb)
-        depth = frame.depth
-        valid = (depth > 0) & (depth < self.max_range) & (sat >= self.min_s) & (val >= self.min_v)
-        detections = []
-        for color, h0 in self.hues.items():
-            dh = np.abs((hue - h0 + 180.0) % 360.0 - 180.0)
-            mask = valid & (dh <= self.hue_tol)
-            if mask.sum() < self.min_pixels:
-                continue
-            labels, n = ndimage.label(mask, structure=np.ones((3, 3), dtype=int))
-            for k in range(1, n + 1):
-                vs, us = np.nonzero(labels == k)
-                if len(vs) < self.min_pixels:
-                    continue
-                det = self._component(color, us, vs, depth[vs, us], frame, cam_pos, cam_rot, pose)
-                if det is None:
-                    continue
-                if exclude and any(np.linalg.norm(det.position[:2] - e[:2]) < 0.12 for e in exclude):
-                    continue
-                detections.append(det)
+        detections = [d for d in self._detect(frame, pose, cam_pos, cam_rot)
+                      if not (exclude and any(np.linalg.norm(d.position[:2] - e[:2]) < 0.12 for e in exclude))]
+        self.busy_s += time.perf_counter() - start
         return detections
 
-    def _component(self, color, us, vs, d, frame: RGBDFrame, cam_pos, cam_rot, pose) -> Detection | None:
-        # Silhouette pixels mix object colour with background depth: keep the object's depth layer.
-        med = float(np.median(d))
-        keep = np.abs(d - med) < 0.12
-        us, vs, d = us[keep], vs[keep], d[keep]
-        if len(d) < self.min_pixels:
-            return None
+    def _detect(self, frame: RGBDFrame, pose, cam_pos, cam_rot) -> list[Detection]:
+        raise NotImplementedError
+
+    # ---- geometry shared by all detectors --------------------------------------------------
+    @staticmethod
+    def back_project(us, vs, d, frame: RGBDFrame, cam_pos, cam_rot, pose) -> tuple[np.ndarray, np.ndarray]:
+        """Pixels (u, v) with depth d -> (N, 2) map-frame xy and (N,) heights."""
         xc = (us + 0.5 - frame.cx) / frame.fx * d
         yc = -(vs + 0.5 - frame.cy) / frame.fy * d
         pts_cam = np.stack([xc, yc, -d], axis=1)
         pts_base = pts_cam @ cam_rot.T + cam_pos
-        xy = to_map(pose, pts_base[:, :2])
-        z = pts_base[:, 2]
+        return to_map(pose, pts_base[:, :2]), pts_base[:, 2]
+
+    def measure(self, xy, z, cam_pos, pose, surface: Surface | None = None) -> Blob | None:
         center_guess = np.median(xy, axis=0)
-        surface = self.ctx.prior.surface_at(center_guess[0], center_guess[1], margin=0.06)
+        if surface is None:
+            surface = self.ctx.prior.surface_at(center_guess[0], center_guess[1], margin=0.06)
         support_z = surface.top_z if surface else 0.0
         top_z = float(np.percentile(z, 97))
         height = top_z - support_z
@@ -149,24 +169,103 @@ class ObjectDetector:
             w_mid = np.percentile(proj[middle], 95) - np.percentile(proj[middle], 5)
             if w_mid > 0.02:
                 taper = float((np.percentile(proj[upper], 95) - np.percentile(proj[upper], 5)) / w_mid)
-        best, best_err = None, np.inf
+        return Blob(xy, z, center_guess, surface, support_z, top_z, height, width, taper, bearing, len(z))
+
+    def fit_errors(self, blob: Blob) -> dict[str, float]:
+        """How badly each catalog type explains the measured size and shape (0 = perfect)."""
+        errors = {}
         for name, (h_t, w_t, _) in self.types.items():
-            err = abs(height - h_t) / h_t + 0.5 * abs(width - w_t) / w_t
-            if taper is not None:
-                err += 0.8 * abs(taper - (0.68 if self.shapes[name] == "sphere" else 0.97))
-            if err < best_err:
-                best, best_err = name, err
-        if best is None or best_err > 0.9:
-            return None
-        h_t, _, radius = self.types[best]
-        top = z >= top_z - 0.01
+            err = abs(blob.height - h_t) / h_t + 0.5 * abs(blob.width - w_t) / w_t
+            if blob.taper is not None:
+                err += 0.8 * abs(blob.taper - (0.68 if self.shapes[name] == "sphere" else 0.97))
+            errors[name] = err
+        return errors
+
+    def make_detection(self, color: str, otype: str, fit_error: float, blob: Blob, stamp: float) -> Detection:
+        h_t, _, radius = self.types[otype]
+        top = blob.z >= blob.top_z - 0.01
         if top.sum() >= 4:
             # The top band also catches the rim's camera-facing side: shift back along the view ray.
-            center = xy[top].mean(axis=0) + bearing * 0.35 * radius
+            center = blob.xy[top].mean(axis=0) + blob.bearing * 0.35 * radius
         else:
-            center = center_guess + bearing * 0.6 * radius
-        return Detection(color, best, np.array([center[0], center[1], support_z + h_t / 2]), top_z, height, width,
-                         int(len(d)), surface.name if surface else None, frame.stamp, float(best_err))
+            center = blob.center_guess + blob.bearing * 0.6 * radius
+        return Detection(color, otype, np.array([center[0], center[1], blob.support_z + h_t / 2]), blob.top_z,
+                         blob.height, blob.width, int(blob.pixels), blob.surface.name if blob.surface else None,
+                         stamp, float(fit_error))
+
+
+class ObjectDetector(GeometricDetector):
+    """Colour detector: HSV segmentation of the catalog colours; type from metric size and shape."""
+
+    kind = "color"
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        p = ctx.catalog.get("perception", {})
+        self.min_s, self.min_v = p.get("min_saturation", 0.5), p.get("min_value", 0.18)
+        self.hue_tol = p.get("hue_tolerance_deg", 14)
+        self.hues = {}
+        for name, c in ctx.catalog["colors"].items():
+            h, s, v = colorsys.rgb_to_hsv(*c["rgba"][:3])
+            if s >= self.min_s and v >= self.min_v:      # white, grey, black: no hue to segment by
+                self.hues[name] = h * 360.0
+
+    def _detect(self, frame: RGBDFrame, pose, cam_pos, cam_rot) -> list[Detection]:
+        hue, sat, val = _hsv(frame.rgb)
+        depth = frame.depth
+        valid = (depth > 0) & (depth < self.max_range) & (sat >= self.min_s) & (val >= self.min_v)
+        detections = []
+        for color, h0 in self.hues.items():
+            dh = np.abs((hue - h0 + 180.0) % 360.0 - 180.0)
+            mask = valid & (dh <= self.hue_tol)
+            if mask.sum() < self.min_pixels:
+                continue
+            labels, n = ndimage.label(mask, structure=np.ones((3, 3), dtype=int))
+            for k in range(1, n + 1):
+                vs, us = np.nonzero(labels == k)
+                if len(vs) < self.min_pixels:
+                    continue
+                det = self._component(color, us, vs, depth[vs, us], frame, cam_pos, cam_rot, pose)
+                if det is not None:
+                    detections.append(det)
+        return detections
+
+    def _component(self, color, us, vs, d, frame: RGBDFrame, cam_pos, cam_rot, pose) -> Detection | None:
+        # Silhouette pixels mix object colour with background depth: keep the object's depth layer.
+        med = float(np.median(d))
+        keep = np.abs(d - med) < 0.12
+        us, vs, d = us[keep], vs[keep], d[keep]
+        if len(d) < self.min_pixels:
+            return None
+        xy, z = self.back_project(us, vs, d, frame, cam_pos, cam_rot, pose)
+        blob = self.measure(xy, z, cam_pos, pose)
+        if blob is None:
+            return None
+        errors = self.fit_errors(blob)
+        best = min(errors, key=errors.get)
+        if errors[best] > self.MAX_FIT_ERROR:
+            return None
+        return self.make_detection(color, best, errors[best], blob, frame.stamp)
+
+
+ColorDetector = ObjectDetector
+
+
+def detector_kind(spec: dict, catalog: dict, override: str | None = None) -> str:
+    """Which detector to run: explicit choice > robot spec > object catalog > colour."""
+    kind = (override or spec.get("perception", {}).get("detector")
+            or catalog.get("perception", {}).get("detector") or "color")
+    if kind not in DETECTORS:
+        raise ConfigError(f"unknown detector {kind!r}; choose one of {', '.join(DETECTORS)}")
+    return kind
+
+
+def make_detector(ctx, kind: str | None = None) -> GeometricDetector:
+    kind = detector_kind(ctx.spec, ctx.catalog, kind)
+    if kind == "learned":
+        from .perception_learned import LearnedObjectDetector
+        return LearnedObjectDetector(ctx)
+    return ObjectDetector(ctx)
 
 
 class WorldModel:

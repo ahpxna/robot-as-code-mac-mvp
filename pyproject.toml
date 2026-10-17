@@ -17,10 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["openai>=1.40"]
+# Learned open-vocabulary object detector (OWLv2): --detector learned. Weights (~600 MB) download on first use.
+vision = ["torch>=2.2", "transformers>=4.45"]
 
 [project.scripts]
 robot-mvp = "robotcode.cli:main"
 robot-eval = "robotcode.evaluate:main"
+robot-perception-bench = "robotcode.perception_bench:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

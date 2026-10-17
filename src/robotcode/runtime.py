@@ -81,7 +81,7 @@ class GroundTruth:
 
 class Simulation:
     def __init__(self, task: dict, *, seed: int = 0, verbose: bool = True, viewer: bool = False,
-                 realtime: bool = False, log: Callable[[str], None] | None = None):
+                 realtime: bool = False, log: Callable[[str], None] | None = None, detector: str | None = None):
         import mujoco
 
         self._mj = mujoco
@@ -96,7 +96,7 @@ class Simulation:
         # true pose and localisation has to find the difference.
         nominal = task.get("robot_start", {}).get("pose", self.scene.prior.start_pose)
         self.stack = RobotStack(self.hal, self.scene.robot_spec, self.scene.prior, self.scene.catalog,
-                                initial_pose=nominal, log=printer)
+                                initial_pose=nominal, log=printer, detector=detector)
         self.n_sub = max(1, round(self.stack.dt / self.model.opt.timestep))
         self.truth = GroundTruth(self.model, self.data, self.scene)
         self.realtime = realtime

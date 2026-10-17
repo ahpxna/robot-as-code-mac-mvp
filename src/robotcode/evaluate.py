@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import ROOT, list_tasks, load_task
+from .perception import DETECTORS
 
 
 @dataclass
@@ -44,6 +45,9 @@ class EpisodeResult:
     message: str
     steps: list[dict] = field(default_factory=list)
     error: str | None = None
+    detector: str = ""
+    detect_frames: int = 0
+    detect_ms: float = 0.0              # mean wall time per detect() call
 
 
 def judge(sim, task: dict) -> list[dict]:
@@ -91,8 +95,8 @@ def judge(sim, task: dict) -> list[dict]:
 
 def run_episode(task: dict, seed: int = 0, *, instruction: str | None = None, planner: str = "rules",
                 verbose: bool = False, viewer: bool = False, realtime: bool = False, log=None,
-                keep_open: bool = False):
-    """Run one mission. Returns (EpisodeResult, Simulation)."""
+                keep_open: bool = False, detector: str | None = None, setup=None):
+    """Run one mission. Returns (EpisodeResult, Simulation). `setup(sim)` runs before the mission starts."""
     from .agent import MissionExecutor
     from .llm_planner import make_planner
     from .planner import UnsupportedTask
@@ -100,8 +104,10 @@ def run_episode(task: dict, seed: int = 0, *, instruction: str | None = None, pl
 
     wall = time.perf_counter()
     instruction = instruction or task.get("instruction", "")
-    sim = Simulation(task, seed=seed, verbose=verbose, viewer=viewer, realtime=realtime, log=log)
+    sim = Simulation(task, seed=seed, verbose=verbose, viewer=viewer, realtime=realtime, log=log, detector=detector)
     stack = sim.stack
+    if setup is not None:
+        setup(sim)
     plan_lines: list[str] = []
     try:
         plan_obj = make_planner(planner, sim.scene.world, sim.scene.catalog)
@@ -132,16 +138,21 @@ def run_episode(task: dict, seed: int = 0, *, instruction: str | None = None, pl
         collisions=len(sim.truth.collisions), object_bumps=len(sim.truth.object_disturbances), path_length=round(sim.truth.path_length, 2),
         loc_error_mean=round(float(np.mean(errors)), 4), loc_error_max=round(float(np.max(errors)), 4),
         energy_wh=round(stack.state.battery.energy_used_wh, 3) if stack.state else 0.0, message=message, steps=steps, error=error)
+    det = stack.detector
+    if det is not None:
+        result.detector = det.kind
+        result.detect_frames = det.frames
+        result.detect_ms = round(1000 * det.busy_s / max(det.frames, 1), 1)
     if not keep_open:
         sim.close()
     return result, sim
 
 
 def _episode_worker(args):
-    path, seed, planner = args
+    path, seed, planner, detector = args
     task = load_task(path)
     try:
-        result, _ = run_episode(task, seed, planner=planner)
+        result, _ = run_episode(task, seed, planner=planner, detector=detector)
         return result.__dict__
     except Exception as exc:  # keep the benchmark going; record the crash
         return {"task": task.get("name"), "seed": seed, "success": False, "robot_success": False,
@@ -164,18 +175,21 @@ def summarize(results: list[dict]) -> list[dict]:
             "object_bumps": int(sum(r.get("object_bumps", 0) for r in rs)),
             "mean_path_m": float(np.mean([r["path_length"] for r in rs])),
             "loc_err_max_m": float(np.max([r["loc_error_max"] for r in rs])),
+            "detect_ms": float(np.mean([r["detect_ms"] for r in rs if r.get("detect_frames")] or [float("nan")])),
             "failed_seeds": [r["seed"] for r in rs if not r["success"]],
         })
     return rows
 
 
 def print_table(rows: list[dict]) -> None:
-    head = f"{'task':36s} {'eps':>4s} {'success':>8s} {'false+':>6s} {'crash':>5s} {'t_ok[s]':>8s} {'coll':>5s} {'bump':>5s} {'path[m]':>8s} {'loc_max':>8s}"
+    head = (f"{'task':36s} {'eps':>4s} {'success':>8s} {'false+':>6s} {'crash':>5s} {'t_ok[s]':>8s} {'coll':>5s} "
+            f"{'bump':>5s} {'path[m]':>8s} {'loc_max':>8s} {'det[ms]':>8s}")
     print(head)
     print("-" * len(head))
     for r in rows:
         print(f"{r['task']:36s} {r['episodes']:4d} {r['success_rate']:8.0%} {r['false_success']:6d} {r['crashes']:5d} "
-              f"{r['mean_time_s']:8.1f} {r['collisions']:5d} {r['object_bumps']:5d} {r['mean_path_m']:8.1f} {r['loc_err_max_m']:8.3f}")
+              f"{r['mean_time_s']:8.1f} {r['collisions']:5d} {r['object_bumps']:5d} {r['mean_path_m']:8.1f} {r['loc_err_max_m']:8.3f} "
+              f"{r.get('detect_ms', float('nan')):8.0f}")
         if r["failed_seeds"]:
             print(f"{'':36s} failed seeds: {r['failed_seeds']}")
 
@@ -185,15 +199,23 @@ def main(argv=None) -> int:
     parser.add_argument("--task", action="append", help="task YAML (repeatable); default: all with success criteria")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0, help="first seed")
-    parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="worker processes (default: cores - 2; at most 4 with --detector learned: one model each)")
     parser.add_argument("--planner", choices=["rules", "llm"], default="rules")
+    parser.add_argument("--detector", choices=DETECTORS, default=None,
+                        help="object detector (default: perception.detector in the robot/catalog YAML, else color)")
     parser.add_argument("--min-success", type=float, default=None,
                         help="exit non-zero if any task's success rate is below this (CI gate)")
     args = parser.parse_args(argv)
     paths = args.task or [str(p) for p in list_tasks() if load_task(str(p)).get("success")]
-    jobs = [(p, args.seed + k, args.planner) for p in paths for k in range(args.episodes)]
+    if args.jobs is None:
+        args.jobs = max(1, (os.cpu_count() or 2) - 2)
+        if args.detector == "learned":
+            args.jobs = min(args.jobs, 4)
+    jobs = [(p, args.seed + k, args.planner, args.detector) for p in paths for k in range(args.episodes)]
     start = time.perf_counter()
-    print(f"Running {len(jobs)} episodes ({len(paths)} tasks x {args.episodes} seeds) on {args.jobs} workers...")
+    print(f"Running {len(jobs)} episodes ({len(paths)} tasks x {args.episodes} seeds) on {args.jobs} workers, "
+          f"detector: {args.detector or 'from config'}...")
     if args.jobs > 1:
         with ProcessPoolExecutor(args.jobs) as pool:
             results = list(pool.map(_episode_worker, jobs))
@@ -203,8 +225,10 @@ def main(argv=None) -> int:
     print_table(rows)
     out_dir = ROOT / "artifacts"
     out_dir.mkdir(exist_ok=True)
-    out = out_dir / f"eval_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    out.write_text(json.dumps({"summary": rows, "episodes": results}, ensure_ascii=False, indent=1, default=str))
+    suffix = f"_{args.detector}" if args.detector else ""
+    out = out_dir / f"eval_{time.strftime('%Y%m%d_%H%M%S')}{suffix}.json"
+    out.write_text(json.dumps({"detector": args.detector, "summary": rows, "episodes": results},
+                              ensure_ascii=False, indent=1, default=str))
     print(f"\n{len(results)} episodes in {time.perf_counter() - start:.0f} s wall. Details: {out.relative_to(ROOT)}")
     if args.min_success is not None and any(r["success_rate"] < args.min_success for r in rows):
         return 1

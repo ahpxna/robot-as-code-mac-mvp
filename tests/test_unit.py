@@ -5,7 +5,8 @@ import unittest
 
 from robotcode.llm_planner import LLMPlanner, validate_plan
 from robotcode.math_utils import to_base, to_map, wheel_targets, world_to_robot, wrap_angle
-from robotcode.planner import RulePlanner, UnsupportedTask, Vocabulary, check_capabilities, strip_accents, fold
+from robotcode.planner import (RulePlanner, UnsupportedTask, Vocabulary, accents_agree, check_capabilities,
+                               fold, strip_accents)
 
 
 def steps(plan):
@@ -40,6 +41,14 @@ class MathTests(unittest.TestCase):
         self.assertEqual(len(text), len(strip_accents(text)))
         self.assertEqual(strip_accents(text), "di vao phong khach, tim chai nuoc")
 
+    def test_typed_accents_must_agree_with_alias(self):
+        for typed in ("den", "đen"):
+            self.assertTrue(accents_agree(typed, "đen"), typed)
+        self.assertTrue(accents_agree("phòng khach", "phòng khách"))
+        self.assertTrue(accents_agree("nươc", "nước"))
+        for typed, alias in (("đến", "đen"), ("tới", "tôi"), ("táo", "tao")):
+            self.assertFalse(accents_agree(typed, alias), typed)
+
 
 class PlannerTests(unittest.TestCase):
     planner = RulePlanner()
@@ -57,6 +66,31 @@ class PlannerTests(unittest.TestCase):
         a = self.planner.plan("Đi vào phòng khách, tìm chai nước trên bàn, lấy nó rồi mang đến cho tao.")
         b = self.planner.plan("di vao phong khach, tim chai nuoc tren ban, lay no roi mang den cho tao")
         self.assertEqual(steps(a), steps(b))
+
+    def test_den_is_to_or_black_by_accents(self):
+        # 'đến' (to) and 'đen' (black) both fold to 'den'; typed accents decide, else the position does.
+        self.assertIn("đen", self.planner.vocab.catalog["colors"]["black"]["aliases"])
+        headline = [
+            ("navigate_to", {"target": "living_room"}),
+            ("find_object", {"object": "bottle", "room": "living_room", "surface": "table"}),
+            ("pick_object", {"object": "bottle"}),
+            ("place_object", {"target": "user"}),
+        ]
+        for text in ("Đi vào phòng khách, tìm chai nước trên bàn, lấy nó rồi mang đến cho tao.",
+                     "di vao phong khach, tim chai nuoc tren ban, lay no roi mang den cho tao",
+                     "Đi vào phòng khach, tìm chai nươc trên ban, lấy nó rồi mang den cho tao"):
+            self.assertEqual(steps(self.planner.plan(text)), headline, text)
+        black_can = [("find_object", {"object": "black can"}), ("pick_object", {"object": "black can"}),
+                     ("place_object", {"target": "desk"})]
+        for text in ("Mang lon đen đến bàn làm việc", "mang lon den den ban lam viec",
+                     "Mang lon den đến bàn làm việc", "mang lon den toi ban lam viec"):
+            self.assertEqual(steps(self.planner.plan(text)), black_can, text)
+        self.assertEqual(steps(self.planner.plan("mang chai đen cho tôi"))[0],
+                         ("find_object", {"object": "black bottle"}))
+        self.assertEqual(steps(self.planner.plan("mang chai den cho toi"))[0], ("find_object", {"object": "bottle"}))
+        self.assertEqual(steps(self.planner.plan("tim lon den tren ban")),
+                         [("find_object", {"object": "black can", "surface": "table"})])
+        self.assertEqual(steps(self.planner.plan("di den bep")), [("navigate_to", {"target": "kitchen"})])
 
     def test_english_fetch_with_room_and_destination(self):
         plan = self.planner.plan("Find the red bottle in the kitchen and bring it to my desk.")
