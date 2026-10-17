@@ -17,6 +17,8 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 
+from .legged import SEGMENTS, is_legged, leg_joint_names, leg_mounts
+
 # Robot geoms collide with the world but never with each other.
 ROBOT_COLLISION = {"contype": 2, "conaffinity": 1}
 WHEELS = ("left_wheel", "right_wheel")
@@ -44,6 +46,23 @@ def arm_joint_names(spec: dict) -> list[str]:
     return list((spec.get("arm") or {}).get("joints", {}))
 
 
+def actuated_joint_names(spec: dict) -> list[str]:
+    """Position-servoed joints the HAL exposes (arm and legs; wheels and gripper have their own calls)."""
+    return arm_joint_names(spec) + leg_joint_names(spec)
+
+
+def spawn_height(spec: dict) -> float:
+    if not is_legged(spec):
+        return 0.0
+    base = spec["base"]
+    return base["postures"][base.get("initial_posture", "stand")]["body_height"] + 0.002
+
+
+def mount_height(spec: dict, z: float) -> float:
+    """Height above the floor of a sensor mounted at base-frame height z (standing, for legged robots)."""
+    return z + (spec["base"]["postures"]["stand"]["body_height"] if is_legged(spec) else 0.0)
+
+
 def has_gripper(spec: dict) -> bool:
     return bool(spec.get("gripper"))
 
@@ -57,10 +76,17 @@ def robot_mjcf(spec: dict, *, floating: bool = True, pose=(0.0, 0.0, 0.0)) -> ET
     sensors = el(root, "sensor")
     equality = el(root, "equality")
     x, y, yaw = pose
-    base = el(world, "body", name="base", pos=[x, y, 0.0], euler=[0, 0, yaw])
+    legged = is_legged(spec)
+    # Wheeled robots: base origin on the floor. Legged robots: base origin at the body centre,
+    # spawned at the height of their initial posture.
+    z0 = spawn_height(spec) if (legged and floating) else 0.0
+    base = el(world, "body", name="base", pos=[x, y, z0], euler=[0, 0, yaw])
     if floating:
         el(base, "freejoint", name="base_free")
-    _build_base(spec, base, actuators, sensors)
+    if legged:
+        _build_legged_base(spec, base, actuators, sensors)
+    else:
+        _build_base(spec, base, actuators, sensors)
     arm = spec.get("arm")
     if arm:
         if arm.get("kind") != "cartesian":
@@ -127,6 +153,54 @@ def _build_base(spec: dict, base: ET.Element, actuators: ET.Element, sensors: ET
            forcerange=[-motor["max_torque"], motor["max_torque"]])
         el(sensors, "jointpos", name=f"{name}_encoder", joint=name)
         el(sensors, "jointvel", name=f"{name}_speed", joint=name)
+
+
+def _build_legged_base(spec: dict, base: ET.Element, actuators: ET.Element, sensors: ET.Element) -> None:
+    b = spec["base"]
+    body = b["body"]
+    color, accent = body.get("color", [0.1, 0.1, 0.1, 1]), body.get("accent", [0.8, 0.1, 0.1, 1])
+    for part in ("thorax", "abdomen"):
+        e = body[part]
+        el(base, "geom", name=part, type="ellipsoid", size=e["radii"], pos=e["center"], mass=e["mass"],
+           rgba=color, **ROBOT_COLLISION)
+    head = body.get("head")
+    if head:
+        el(base, "geom", name="head", type="sphere", size=[head["radius"]], pos=head["center"], mass=head["mass"],
+           rgba=color, **ROBOT_COLLISION)
+    ab = body["abdomen"]
+    # Red hourglass stripe on the back: visual only.
+    el(base, "geom", name="accent_stripe", type="ellipsoid", size=[ab["radii"][0] * 0.55, ab["radii"][1] * 0.3, 0.004],
+       pos=[ab["center"][0], 0, ab["center"][2] + ab["radii"][2] * 0.97], rgba=accent, mass=0.001,
+       contype=0, conaffinity=0)
+    battery = b.get("battery")
+    if battery:
+        el(base, "geom", name="battery_pack", type="box", size=[0.03, 0.02, 0.008], pos=ab["center"],
+           mass=battery["mass"], contype=0, conaffinity=0, group=3, rgba=[0.1, 0.1, 0.1, 1])
+    lg = b["legs"]
+    radius, foot = lg["radius"], lg["foot"]
+    for name, (x, y, heading) in leg_mounts(spec).items():
+        parent, pos = base, [x, y, 0.0]
+        for i, seg in enumerate(SEGMENTS):
+            j = lg["joints"][seg]
+            link = el(parent, "body", name=f"{name}_{seg}_link", pos=pos,
+                      euler=[0, 0, math.radians(heading)] if i == 0 else None)
+            # coxa yaws about z; femur and tibia pitch about -y so a positive angle lifts the leg.
+            el(link, "joint", name=f"{name}_{seg}", type="hinge", axis=[0, 0, 1] if i == 0 else [0, -1, 0],
+               range=[math.radians(v) for v in j["range"]], damping=j["damping"], armature=lg.get("armature", 0.004))
+            length = lg[seg]["length"]
+            el(link, "geom", name=f"{name}_{seg}_geom", type="capsule", fromto=[0, 0, 0, length, 0, 0], size=[radius],
+               mass=lg[seg]["mass"], rgba=color if seg != "femur" else [0.16, 0.16, 0.18, 1], **ROBOT_COLLISION)
+            el(actuators, "position", name=f"{name}_{seg}_motor", joint=f"{name}_{seg}", kp=j["kp"],
+               ctrlrange=[math.radians(v) for v in j["range"]], forcerange=[-j["force"], j["force"]])
+            el(sensors, "jointpos", name=f"{name}_{seg}_encoder", joint=f"{name}_{seg}")
+            el(sensors, "actuatorfrc", name=f"{name}_{seg}_effort", actuator=f"{name}_{seg}_motor")
+            parent, pos = link, [length, 0, 0]
+        el(parent, "geom", name=f"{name}_foot", type="sphere", size=[foot["radius"]], pos=pos, mass=0.005,
+           friction=[foot.get("friction", 1.0), 0.005, 0.0001], rgba=accent, **ROBOT_COLLISION)
+        if "foot_contacts" in spec["sensors"]:
+            el(parent, "site", name=f"{name}_foot_touch", type="sphere", size=[foot["radius"] + 0.004], pos=pos,
+               rgba=[0, 0, 0, 0])
+            el(sensors, "touch", name=f"foot_{name}", site=f"{name}_foot_touch")
 
 
 def _build_cartesian_arm(spec: dict, base: ET.Element, actuators: ET.Element, sensors: ET.Element) -> ET.Element:
@@ -199,6 +273,14 @@ def _build_parallel_gripper(spec: dict, wrist: ET.Element, actuators: ET.Element
     el(gripper, "geom", name="palm", type="box", size=[0.02, half_open + ft + 0.008, 0.025],
        mass=0.25, rgba=_DARK_RGBA, **ROBOT_COLLISION)
     el(gripper, "site", name="grasp_site", pos=[0.02 + fl / 2, 0, 0], size=[0.008], rgba=[1, 0.85, 0, 0.5])
+    wrist_cam = spec["sensors"].get("wrist_camera")
+    if wrist_cam:
+        # Eye-in-hand camera on top of the palm, looking forward and down between the fingers.
+        pitch = math.radians(wrist_cam.get("pitch_deg", 25))
+        el(gripper, "geom", name="wrist_camera_housing", type="box", size=[0.012, 0.018, 0.01], pos=[0.0, 0, 0.034],
+           mass=0.03, rgba=_MAST_RGBA, contype=0, conaffinity=0)
+        el(gripper, "camera", name="wrist_camera", pos=[0.013, 0, 0.036],
+           xyaxes=[0, -1, 0, math.sin(pitch), 0, math.cos(pitch)], fovy=wrist_cam["fovy_deg"])
     for side, sign in (("left", 1), ("right", -1)):
         body = el(gripper, "body", name=f"finger_{side}", pos=[0.02, sign * (half_open + ft / 2), 0])
         el(body, "joint", name=f"finger_{side}", type="slide", axis=[0, -sign, 0], range=[0, travel],
@@ -220,9 +302,10 @@ def _build_parallel_gripper(spec: dict, wrist: ET.Element, actuators: ET.Element
 
 def _build_sensors(spec: dict, base: ET.Element, sensors: ET.Element) -> None:
     s = spec["sensors"]
-    ch = spec["base"]["chassis"]
+    legged = is_legged(spec)
+    ch = spec["base"].get("chassis", {"size": [0.0, 0.0, 0.0], "ground_clearance": 0.0})
     length, width, height = ch["size"]
-    zc = ch["ground_clearance"] + height / 2
+    zc = 0.0 if legged else ch["ground_clearance"] + height / 2
     if "imu" in s:
         el(base, "site", name="imu", pos=[0, 0, zc], size=[0.01], rgba=[1, 0, 0, 0])
         el(sensors, "gyro", name="imu_gyro", site="imu")
@@ -235,7 +318,7 @@ def _build_sensors(spec: dict, base: ET.Element, sensors: ET.Element) -> None:
     if "head_camera" in s:
         cam = s["head_camera"]
         pitch = math.radians(cam["pitch_deg"])
-        if not spec.get("arm"):
+        if not spec.get("arm") and not legged:
             # No arm mast to carry the camera: add a slim sensor post.
             top = ch["ground_clearance"] + height
             post_x = cam["x"] - 0.05
@@ -246,6 +329,21 @@ def _build_sensors(spec: dict, base: ET.Element, sensors: ET.Element) -> None:
         # MuJoCo cameras look along -z with +y up: x = image right, y = image up.
         el(base, "camera", name="head_camera", pos=[cam["x"], 0, cam["z"]],
            xyaxes=[0, -1, 0, math.sin(pitch), 0, math.cos(pitch)], fovy=cam["fovy_deg"])
+    if "lidar_3d" in s:
+        # Hemispherical multi-channel LiDAR on top of the head; rays are cast by the HAL.
+        l3 = s["lidar_3d"]
+        el(base, "geom", name="lidar3d_dome", type="cylinder", size=[0.04, 0.025], pos=[l3["x"], 0, l3["z"] - 0.01],
+           mass=0.25, rgba=_DARK_RGBA, contype=0, conaffinity=0)
+        el(base, "site", name="lidar_3d", pos=[l3["x"], 0, l3["z"]], size=[0.005], rgba=[0, 1, 0, 0])
+    if "tof_ring" in s:
+        # Short-range time-of-flight sensors around the chassis: see what is below the LiDAR plane.
+        # Like the LiDARs, their rays are cast by the HAL (which masks hits on the robot itself).
+        tof = s["tof_ring"]
+        z = tof.get("z", ch["ground_clearance"] + 0.015)
+        for i, (x, y, yaw_deg) in enumerate(tof["mounts"]):
+            yaw = math.radians(yaw_deg)
+            el(base, "site", name=f"tof_{i}", pos=[x, y, z], zaxis=[math.cos(yaw), math.sin(yaw), 0], size=[0.006],
+               rgba=[1, 0.5, 0, 0])
     if "bumper" in s:
         el(base, "site", name="bumper", type="box", size=[length / 2 + 0.012, width / 2 + 0.012, height * 0.4],
            pos=[0, 0, zc], rgba=[1, 0, 0, 0])

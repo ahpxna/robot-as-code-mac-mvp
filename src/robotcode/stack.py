@@ -12,8 +12,9 @@ from typing import Callable, Generator
 import numpy as np
 
 from .description import has_gripper
-from .hal import LaserScan, RobotInterface, RobotState
+from .hal import LaserScan, PointCloud, ProximityReading, RobotInterface, RobotState
 from .kinematics import Kinematics
+from .legged import GaitController, is_legged
 from .localization import Localizer
 from .manipulation import Arm, Gripper
 from .mapping import PriorMap
@@ -30,8 +31,9 @@ class RobotStack:
         self.dt = 1.0 / spec.get("control", {}).get("rate_hz", 50)
         self._log = log or (lambda msg: None)
         self.kin = Kinematics(spec)
-        self.localizer = Localizer(prior, spec, prior.start_pose if initial_pose is None else initial_pose)
-        self.drive = DiffDriveController(hal, spec)
+        self.drive = GaitController(hal, spec) if is_legged(spec) else DiffDriveController(hal, spec)
+        self.localizer = Localizer(prior, spec, prior.start_pose if initial_pose is None else initial_pose,
+                                   velocity_source=lambda: self.drive.v)
         self.nav = Navigator(self)
         self.arm = Arm(self) if spec.get("arm") else None
         self.gripper = Gripper(self) if has_gripper(spec) else None
@@ -40,6 +42,8 @@ class RobotStack:
         self.safety = SafetyMonitor(self)
         self.state: RobotState | None = None
         self.scan: LaserScan | None = None
+        self.cloud: PointCloud | None = None
+        self.proximity: ProximityReading | None = None
         self._active: Generator | None = None
         self._active_name = ""
         self.result = None
@@ -56,12 +60,26 @@ class RobotStack:
         return self.localizer.pose
 
     @property
+    def base_height(self) -> float:
+        """Height of the base frame above the floor: 0 for wheeled robots (origin on the floor); for
+        legged robots, estimated from the leg kinematics of the feet that report ground contact."""
+        if not is_legged(self.spec) or self.state is None:
+            return 0.0
+        legs = self.drive.legs
+        q = self.state.joints
+        down = [leg for leg in legs if self.state.touch.get(leg.name, 0.0) > 0.2] or legs
+        feet_z = [leg.fk([q[j] for j in leg.joints])[2] for leg in down]
+        return float(-np.mean(feet_z) + legs[0].foot_radius)
+
+    @property
     def capabilities(self) -> set[str]:
         caps = {"navigate"}
         if self.detector:
             caps.add("perceive")
         if self.arm and self.gripper:
             caps.add("manipulate")
+        if "fold" in self.spec["base"].get("postures", {}):
+            caps.add("transform")
         return caps
 
     def grip_lost(self) -> str | None:
@@ -109,13 +127,21 @@ class RobotStack:
             self.scan = scan
             self.localizer.correct(scan)
             self.nav.update(self.time)
+        cloud = self.hal.read_cloud()
+        if cloud is not None and (self.cloud is None or cloud.stamp > self.cloud.stamp):
+            self.cloud = cloud
+            self.nav.update_cloud(self.time)
+        self.proximity = self.hal.read_proximity()
+        if self.proximity is not None:
+            self.nav.update_proximity(self.time)
         self.safety.check()
         if self._active is None:
             self.drive.command(0.0, 0.0, self.dt)
-            return
-        try:
-            next(self._active)
-        except StopIteration as stop:
-            self.result = stop.value
-            self._active = None
-            self.drive.halt()
+        else:
+            try:
+                next(self._active)
+            except StopIteration as stop:
+                self.result = stop.value
+                self._active = None
+                self.drive.halt()
+        self.drive.tick(self.dt)

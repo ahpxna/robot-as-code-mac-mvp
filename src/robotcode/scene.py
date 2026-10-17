@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import BUILD_DIR, ConfigError, load_catalog, load_robot, load_world
-from .description import el, robot_mjcf
+from .description import el, mount_height, robot_mjcf
 from .mapping import PriorMap, get_prior_map
 
 APPROACH_CLEARANCE = 0.42      # free space needed in front of a surface edge for a robot to stand
@@ -59,8 +59,10 @@ def object_body(spawn: ObjectSpawn, catalog: dict) -> ET.Element:
     body = ET.Element("body", name=spawn.name, pos=" ".join(f"{v:.5f}" for v in spawn.xyz),
                       euler=f"0 0 {spawn.yaw:.4f}")
     el(body, "freejoint", name=f"{spawn.name}_free")
-    common = dict(name=f"{spawn.name}_geom", mass=otype["mass"], rgba=rgba, condim=4,
-                  friction=[otype.get("friction", 1.0), 0.01, 0.0005])
+    rolling = otype.get("rolling_friction")
+    # condim 6 adds rolling resistance (needed for round things); 4 = sliding + torsional friction.
+    common = dict(name=f"{spawn.name}_geom", mass=otype["mass"], rgba=rgba, condim=6 if rolling else 4,
+                  friction=[otype.get("friction", 1.0), 0.01, rolling or 0.0005])
     if otype["shape"] == "cylinder":
         el(body, "geom", type="cylinder", size=[otype["radius"], otype["height"] / 2], **common)
     elif otype["shape"] == "sphere":
@@ -144,9 +146,14 @@ def robot_start(task: dict, prior: PriorMap, rng: np.random.Generator) -> tuple[
 def build_scene(task: dict, *, seed: int = 0, write: bool = True) -> Scene:
     world = load_world(task.get("world", "apartment"))
     robot_spec = load_robot(task.get("robot", "helper_rover"))
+    for sensor in task.get("sensors_off", []):          # ablation: run the same robot without a sensor
+        robot_spec["sensors"].pop(sensor, None)
     catalog = load_catalog()
-    lidar_height = robot_spec["sensors"].get("lidar", {}).get("z", 0.175)
-    prior = get_prior_map(world["name"], lidar_height=lidar_height)
+    from .kinematics import Kinematics
+
+    lidar_height = mount_height(robot_spec, robot_spec["sensors"].get("lidar", {}).get("z", 0.175))
+    robot_height = mount_height(robot_spec, Kinematics(robot_spec).height()) + 0.05
+    prior = get_prior_map(world["name"], lidar_height=lidar_height, robot_height=robot_height)
     rng = np.random.default_rng(seed)
     pose = robot_start(task, prior, rng)
     spawns = place_objects(task, prior, catalog, rng)

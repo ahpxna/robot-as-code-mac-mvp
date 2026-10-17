@@ -94,13 +94,18 @@ VERBS = {
     "go": ["di", "di vao", "di den", "di toi", "di sang", "di qua", "chay den", "chay toi", "go", "go to", "head to",
            "navigate", "navigate to", "move to", "drive to", "ve"],
     "find": ["tim", "tim kiem", "kiem", "find", "look for", "search", "search for", "locate", "where is"],
-    "pick": ["lay", "nhat", "cam", "gap", "nhac", "pick", "pick up", "grab", "take", "get"],
+    "pick": ["lay", "nhat", "cam", "gắp", "nhac", "pick", "pick up", "grab", "take", "get"],
     "bring": ["mang", "dem", "dua", "chuyen", "bring", "carry", "deliver", "fetch"],
     "put": ["dat", "de", "bo", "put", "place", "leave", "drop", "set"],
     "stop": ["dung", "dung lai", "stop", "halt", "thoi"],
     "status": ["trang thai", "status", "pin", "battery", "bao cao", "report"],
     "look": ["nhin xung quanh", "nhin quanh", "quan sat", "look around", "what do you see", "thay gi", "co gi"],
+    # Accented entries only match input whose diacritics agree: "gập" (fold) is not "gắp" (grasp).
+    "fold": ["gập lại", "gập", "gập chân", "thu gọn", "thu chân", "biến hình", "biến thành logo", "fold",
+             "fold up", "transform", "logo"],
+    "unfold": ["mở ra", "duỗi chân", "đứng dậy", "đứng lên", "unfold", "stand up"],
 }
+VERB_PRIORITY = {"pick": 0, "fold": 1}      # on an exact tie ("gap" typed without accents) prefer grasping
 DEST_MARKERS = {"den", "toi", "cho", "vao", "len", "sang", "ve", "to", "onto", "into", "for", "tren", "on", "o"}
 SOURCE_MARKERS = {"trong", "tu", "o", "tren", "in", "from", "at", "inside", "on", "of"}
 FILLER = {"cai", "chiec", "the", "a", "an", "my", "cua", "phong", "nha", "khu", "ngay", "mot", "nhung", "that",
@@ -178,13 +183,20 @@ class Vocabulary:
         return sorted(found, key=lambda m: m.start)
 
 
-def _verbs(text_ascii: str) -> list[tuple[int, str]]:
-    out = []
+def _verbs(text_ascii: str, text: str | None = None) -> list[tuple[int, str]]:
+    """(position, verb) for every verb phrase; at one position the longest phrase wins."""
+    found = []
     for verb, words in VERBS.items():
-        for w in sorted(words, key=len, reverse=True):
-            for m in re.finditer(rf"(?<!\w){re.escape(w)}(?!\w)", text_ascii):
-                out.append((m.start(), verb))
-    return sorted(out)
+        for w in words:
+            pattern = strip_accents(fold(w))
+            for m in re.finditer(rf"(?<!\w){re.escape(pattern)}(?!\w)", text_ascii):
+                if text is not None and not w.isascii() and not accents_agree(text[m.start():m.end()], fold(w)):
+                    continue
+                found.append((m.start(), -(m.end() - m.start()), VERB_PRIORITY.get(verb, 0), verb))
+    best: dict[int, str] = {}
+    for pos, _, _, verb in sorted(found):
+        best.setdefault(pos, verb)
+    return sorted(best.items())
 
 
 def _marker_before(text_ascii: str, start: int) -> str | None:
@@ -222,7 +234,7 @@ class RulePlanner:
 
         for c0, c1 in clauses:
             ms = [m for m in mentions if c0 <= m.start < c1]
-            verbs = [(p, v) for p, v in _verbs(ascii_text) if c0 <= p < c1]
+            verbs = [(p, v) for p, v in _verbs(ascii_text, text) if c0 <= p < c1]
             if not ms and not verbs:
                 continue
             obj = self._object(ms)
@@ -243,6 +255,10 @@ class RulePlanner:
 
             if verb == "stop":
                 return Plan(instruction, [SkillCall.make("stop_robot")], "stop")
+            if verb in ("fold", "unfold"):
+                steps.append(SkillCall.make("fold_robot" if verb == "fold" else "unfold_robot"))
+                intent = intent or verb
+                continue
             if verb == "status":
                 steps.append(SkillCall.make("get_robot_status"))
                 intent = intent or "status"

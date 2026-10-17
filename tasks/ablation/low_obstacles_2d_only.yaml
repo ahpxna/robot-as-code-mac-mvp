@@ -1,0 +1,22 @@
+# Clutter the 2D LiDAR cannot see, absent from the map: a 9 cm box on the floor (below the 17.5 cm
+# scan plane) and a low console whose top (30-34 cm) spans a 1.1 m gap between two end panels --
+# the 2D scan sees only the panels and reads the gap as free. The 3D LiDAR and the ToF ring see both.
+# Ablation of tasks/low_obstacles.yaml: identical scene, the 3D LiDAR and ToF ring switched off.
+name: low_obstacles_2d_only
+world: apartment
+robot: helper_rover
+instruction: "Đi vào bếp"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.05, 0.05, 0.15]}
+obstacles:
+  # Low console across the way to the kitchen door: top at 30-34 cm, end panels 1.16 m apart.
+  - {name: console_top, type: box, pos: [1.45, 2.75, 0.32], size: [0.6, 0.2, 0.02], rgba: [0.3, 0.3, 0.32, 1]}
+  - {name: console_end_w, type: box, pos: [0.87, 2.75, 0.15], size: [0.02, 0.2, 0.15], rgba: [0.3, 0.3, 0.32, 1]}
+  - {name: console_end_e, type: box, pos: [2.03, 2.75, 0.15], size: [0.02, 0.2, 0.15], rgba: [0.3, 0.3, 0.32, 1]}
+  # Shoe box just inside the kitchen, on the way to the room's look-around spot.
+  - {name: shoe_box, type: box, pos: [1.55, 4.05, 0.045], size: [0.12, 0.16, 0.045], rgba: [0.75, 0.55, 0.35, 1]}
+objects: []
+success:
+  - robot_in_room: kitchen
+  - max_collisions: 0
+time_limit: 150
+sensors_off: [lidar_3d, tof_ring]

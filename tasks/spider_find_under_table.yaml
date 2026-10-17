@@ -1,0 +1,14 @@
+# Something rolled under the kitchen table. The 1.4 m helper robot cannot see or reach under it;
+# the 12 cm spider can walk there (its map is built for its own height) and its camera looks under.
+name: spider_find_under_table
+world: apartment
+robot: spider_bot
+instruction: "Tìm quả táo xanh trong bếp"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects:
+  - {name: green_apple, type: apple, color: green, support: floor, at: [2.05, 5.05], jitter: 0.15}
+  - {name: red_bottle, type: bottle, color: red, support: kitchen_table}
+success:
+  - robot_reports_success: true
+  - max_collisions: 0
+time_limit: 240

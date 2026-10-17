@@ -15,6 +15,7 @@ from typing import Callable
 import numpy as np
 
 from .hal import SimRobot
+from .legged import is_legged, posture_joints
 from .scene import Scene, build_scene
 from .stack import RobotStack
 
@@ -88,6 +89,11 @@ class Simulation:
         self.task = task
         self.scene = build_scene(task, seed=seed)
         self.model, self.data = self.scene.compile()
+        spec = self.scene.robot_spec
+        if is_legged(spec):
+            # The robot boots in its declared posture (standing, or folded into its "logo").
+            for joint, angle in posture_joints(spec, spec["base"].get("initial_posture", "stand")).items():
+                self.data.qpos[self.model.joint(joint).qposadr[0]] = angle
         mujoco.mj_forward(self.model, self.data)
         self.hal = SimRobot(self.model, self.data, self.scene.robot_spec, seed=seed)
         self.verbose = verbose

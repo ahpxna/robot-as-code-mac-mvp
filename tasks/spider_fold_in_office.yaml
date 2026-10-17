@@ -1,0 +1,12 @@
+# The spider walks from the living room to the office and folds into its compact "logo" posture.
+name: spider_fold_in_office
+world: apartment
+robot: spider_bot
+instruction: "Đi vào phòng làm việc rồi gập lại thành logo"
+robot_start: {pose: [1.0, 2.0, 0.0], jitter: [0.08, 0.08, 0.25]}
+objects: []
+success:
+  - robot_in_room: office
+  - robot_posture: fold
+  - max_collisions: 0
+time_limit: 200

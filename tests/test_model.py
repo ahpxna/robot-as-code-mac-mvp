@@ -19,7 +19,11 @@ class DescriptionTests(unittest.TestCase):
             spec = load_robot(path.stem)
             model = mujoco.MjModel.from_xml_string(robot_xml(spec, floating=False))
             self.assertGreater(model.nbody, 3, path.stem)
-            self.assertEqual(model.actuator("left_wheel_motor").trntype, 0)
+            if spec["base"]["kind"] == "legged":
+                legs = len(spec["base"]["legs"]["mounts"]) * (2 if spec["base"]["legs"].get("mirror") else 1)
+                self.assertEqual(model.nu, 3 * legs, path.stem)          # coxa, femur, tibia servos
+            else:
+                self.assertEqual(model.actuator("left_wheel_motor").trntype, 0)
 
     def test_helper_rover_interfaces(self):
         from robotcode.config import load_robot

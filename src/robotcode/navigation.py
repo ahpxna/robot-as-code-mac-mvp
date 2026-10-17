@@ -70,6 +70,9 @@ class DiffDriveController:
         self.v = self.w = 0.0
         self.hal.command_wheels(0.0, 0.0)
 
+    def tick(self, dt: float) -> None:
+        """Wheel setpoints are sent in command(); nothing to do per tick (legs need it, see legged.py)."""
+
 
 class Costmap:
     def __init__(self, prior: PriorMap, *, lethal_radius: float, inflation: float = 0.35,
@@ -80,7 +83,11 @@ class Costmap:
         self.lethal_radius = lethal_radius
         self.inflation = inflation
         self.decay = obstacle_decay_s
-        self.seen = np.full(self.static.shape, -np.inf)
+        self.seen = np.full(self.static.shape, -np.inf)        # 2D LiDAR layer
+        # 3D layer (3D LiDAR, ToF, known drops): obstacles above/below the 2D scan plane. Kept apart so
+        # a 2D beam passing over a low object does not clear it.
+        self.seen3d = np.full(self.static.shape, -np.inf)
+        self.decay3d = 15.0
         self._cache_key = None
         self._distance = None
 
@@ -108,17 +115,48 @@ class Costmap:
             ok = self.grid.inside(ix, iy)
             self.seen[iy[ok], ix[ok]] = now
 
+    def mark_points(self, xy_map: np.ndarray, now: float) -> None:
+        """Mark 3D obstacle points (map frame) that the prior map does not explain."""
+        if len(xy_map) == 0:
+            return
+        unexplained = self.prior.distance.value(xy_map[:, 0], xy_map[:, 1]) > 0.08
+        ix, iy = self.grid.to_cell(xy_map[unexplained, 0], xy_map[unexplained, 1])
+        ok = self.grid.inside(ix, iy)
+        self.seen3d[iy[ok], ix[ok]] = np.maximum(self.seen3d[iy[ok], ix[ok]], now)
+
+    def update_cloud(self, pose, points: np.ndarray, now: float, *, z_max: float, max_range: float = 4.0) -> np.ndarray:
+        """3D LiDAR sweep (base frame): floor returns clear the 3D layer, returns between 3 cm and the
+        robot's height mark it. Returns the obstacle points in the map frame."""
+        near = np.hypot(points[:, 0], points[:, 1]) < max_range
+        pts = points[near]
+        xy = to_map(pose, pts[:, :2])
+        floor = np.abs(pts[:, 2]) < 0.02
+        ix, iy = self.grid.to_cell(xy[floor, 0], xy[floor, 1])
+        ok = self.grid.inside(ix, iy)
+        ix, iy = ix[ok], iy[ok]
+        clear = self.seen3d[iy, ix] <= now
+        self.seen3d[iy[clear], ix[clear]] = -np.inf
+        # Range noise lifts the odd floor return above any small threshold; a real obstacle returns
+        # several points per cell, so require two in the same sweep (and > 4 cm, about 4 sigma).
+        obstacle = (pts[:, 2] > 0.04) & (pts[:, 2] < z_max + 0.05)
+        ix, iy = self.grid.to_cell(xy[obstacle, 0], xy[obstacle, 1])
+        cells, inverse, counts = np.unique(np.stack([ix, iy], axis=1), axis=0, return_inverse=True,
+                                           return_counts=True)
+        solid = counts[inverse.ravel()] >= 2
+        self.mark_points(xy[obstacle][solid], now)
+        return xy[obstacle][solid]
+
     def add_obstacle(self, xy, radius: float, now: float, lifetime: float = 120.0) -> None:
-        """Mark an obstacle the LiDAR cannot see (e.g. something dropped on the floor)."""
+        """Mark an obstacle no sensor may see again soon (e.g. something dropped on the floor)."""
         grid = self.grid
         ny, nx = self.static.shape
         yy, xx = np.mgrid[0:ny, 0:nx]
         cx, cy = grid.to_world(xx, yy)
         near = (cx - xy[0]) ** 2 + (cy - xy[1]) ** 2 <= radius ** 2
-        self.seen[near] = now + lifetime - self.decay
+        self.seen3d[near] = now + lifetime - self.decay3d
 
     def occupied(self, now: float) -> np.ndarray:
-        return self.static | (self.seen > now - self.decay)
+        return self.static | (self.seen > now - self.decay) | (self.seen3d > now - self.decay3d)
 
     def distance(self, now: float) -> Grid:
         occ = self.occupied(now)
@@ -247,7 +285,15 @@ class PathFollower:
         """Signed distance from base-frame points to the footprint (union of boxes; negative inside)."""
         return footprint_clearance(self.footprint, lx, ly)
 
-    def time_to_collision(self, v: float, w: float, obstacles: np.ndarray, horizon: float = 1.2) -> float:
+    ROTATION_MARGIN = 0.015     # turning in place is slow and controlled: a smaller safety margin than driving
+
+    def rotation_free(self, angle: float, obstacles: np.ndarray) -> bool:
+        """Can the robot turn in place by `angle` (rad, signed) without its footprint touching anything?"""
+        return self.time_to_collision(0.0, math.copysign(1.0, angle), obstacles, horizon=abs(angle),
+                                      margin=self.ROTATION_MARGIN) == math.inf
+
+    def time_to_collision(self, v: float, w: float, obstacles: np.ndarray, horizon: float = 1.2,
+                          margin: float | None = None) -> float:
         """First time (s) at which driving at (v, w) brings the footprint within `margin` of a LiDAR
         point (base-frame points). Points already that close only count if the motion gets closer,
         so the robot can always back away from something it docked next to."""
@@ -258,7 +304,9 @@ class PathFollower:
         if len(pts) == 0:
             return math.inf
         d0 = self.clearance(pts[:, 0], pts[:, 1])
-        for t in np.linspace(horizon / 8, horizon, 8):
+        # Sample every ~5 cm of travel / ~6 degrees of rotation, at least 8 times.
+        samples = max(8, int(max(abs(v) * horizon / 0.05, abs(w) * horizon / 0.1)))
+        for t in np.linspace(horizon / samples, horizon, samples):
             th = w * t
             if abs(w) < 1e-6:
                 ox, oy = v * t, 0.0
@@ -267,7 +315,7 @@ class PathFollower:
             c, s = math.cos(th), math.sin(th)
             dx, dy = pts[:, 0] - ox, pts[:, 1] - oy
             d = self.clearance(c * dx + s * dy, -s * dx + c * dy)
-            if np.any((d < self.margin) & (d < d0 - 0.002)):
+            if np.any((d < (self.margin if margin is None else margin)) & (d < d0 - 0.002)):
                 return float(t)
         return math.inf
 
@@ -293,16 +341,21 @@ class PathFollower:
         dx, dy = target - pos
         alpha = wrap_angle(math.atan2(dy, dx) - pose[2])
         if abs(alpha) > 0.6:
-            w = clamp(1.8 * alpha, -self.max_w, self.max_w)
-            if self.turn_dir is not None:
-                w = self.turn_dir * max(abs(w), 0.4)
-            if self.time_to_collision(0.0, w, obstacles, horizon=0.6) < 0.6:
-                # The short way round is blocked: commit to turning the long way if that is free.
-                w_alt = -math.copysign(max(0.6 * self.max_w, 0.4), w)
-                if self.time_to_collision(0.0, w_alt, obstacles, horizon=0.6) < 0.6:
+            if self.turn_dir is None:
+                # Pick a turning direction whose WHOLE sweep is free: the short way, else the long way.
+                short = math.copysign(1.0, alpha)
+                if self.rotation_free(short * abs(alpha), obstacles):
+                    self.turn_dir = short
+                elif self.rotation_free(-short * (2 * math.pi - abs(alpha)), obstacles):
+                    self.turn_dir = -short
+                else:
                     return 0.0, 0.0, "blocked"
-                self.turn_dir = math.copysign(1.0, w_alt)
-                w = w_alt
+            remaining = alpha if math.copysign(1.0, alpha) == self.turn_dir else alpha - self.turn_dir * 2 * math.pi
+            if self.time_to_collision(0.0, self.turn_dir, obstacles, horizon=min(abs(remaining), 0.6),
+                                      margin=self.ROTATION_MARGIN) < math.inf:
+                self.turn_dir = None
+                return 0.0, 0.0, "blocked"
+            w = self.turn_dir * clamp(1.8 * abs(remaining), 0.4, self.max_w)
             return 0.0, w, "running"
         self.turn_dir = None
         v = min(self.max_v, math.sqrt(2 * 0.35 * max(remaining - 0.02, 0.0)) + 0.04) * max(math.cos(alpha), 0.2)
@@ -335,17 +388,61 @@ class Navigator:
         self.max_v, self.max_w = lim["max_linear_speed"], lim["max_angular_speed"]
         self.path: np.ndarray | None = None
         self.goal = None
+        self.robot_height = ctx.kin.height()
+        self._scan_map = np.zeros((0, 2))
+        self._cloud_map = np.zeros((0, 2))
 
     # ---- perception of free space ---------------------------------------------
     def obstacles_base(self) -> np.ndarray:
-        scan = self.ctx.scan
-        if scan is None:
+        """Obstacle points in the current base frame from every ranging sensor (for collision checks).
+        LiDAR points are kept in the map frame between sweeps so they stay put while the robot moves."""
+        parts = [to_base(self.ctx.pose, pts) for pts in (self._scan_map, self._cloud_map) if len(pts)]
+        prox = self.ctx.proximity
+        if prox is not None:
+            hit = np.isfinite(prox.ranges)
+            m = prox.mounts[hit]
+            r = prox.ranges[hit]
+            parts.append(np.stack([m[:, 0] + r * np.cos(m[:, 2]), m[:, 1] + r * np.sin(m[:, 2])], axis=1))
+        if not parts:
             return np.zeros((0, 2))
-        return ScanMatcher.scan_points(scan, 1, max_range=3.0)
+        pts = np.concatenate(parts)
+        return pts[np.hypot(pts[:, 0], pts[:, 1]) < 3.0]
 
     def update(self, now: float) -> None:
         if self.ctx.scan is not None:
             self.costmap.update(self.ctx.pose, self.ctx.scan, now)
+            self._scan_map = to_map(self.ctx.pose, ScanMatcher.scan_points(self.ctx.scan, 1, max_range=3.0))
+
+    def update_cloud(self, now: float) -> None:
+        cloud = self.ctx.cloud
+        if cloud is not None:
+            points = cloud.points
+            ctx = self.ctx
+            if ctx.world.held is not None and ctx.arm is not None:
+                # Attached object: the LiDAR sees what the gripper holds. Like MoveIt's attached
+                # collision objects, returns around it are part of the robot, not obstacles.
+                # Only the held object's own volume is masked: anything else near the gripper is a
+                # real obstacle that the object (or the gripper) is about to hit.
+                held = ctx.world.objects[ctx.world.held]
+                otype = ctx.catalog["types"][held.type]
+                height = 2 * otype["radius"] if otype["shape"] == "sphere" else otype["height"]
+                below = held.history[-1]["grasp_offset"] if held.history else height / 2
+                grip = ctx.arm.gripper_position()
+                on_object = ((np.linalg.norm(points[:, :2] - grip[:2], axis=1) < otype["radius"] + 0.02)
+                             & (points[:, 2] > grip[2] - below - 0.02) & (points[:, 2] < grip[2] + height - below + 0.02))
+                points = points[~on_object]
+            points = points + np.array([0.0, 0.0, ctx.base_height])     # heights above the floor
+            self._cloud_map = self.costmap.update_cloud(ctx.pose, points, now, z_max=self.robot_height)
+
+    def update_proximity(self, now: float) -> None:
+        prox = self.ctx.proximity
+        if prox is None:
+            return
+        hit = np.isfinite(prox.ranges)
+        if np.any(hit):
+            m, r = prox.mounts[hit], prox.ranges[hit]
+            pts = np.stack([m[:, 0] + r * np.cos(m[:, 2]), m[:, 1] + r * np.sin(m[:, 2])], axis=1)
+            self.costmap.mark_points(to_map(self.ctx.pose, pts), now)
 
     def footprint_free(self, pose, margin: float = 0.0, now: float | None = None) -> bool:
         pts = self._sample
@@ -378,22 +475,26 @@ class Navigator:
         replans, stalls, blocked_since, start_time = 0, 0, None, ctx.time
         self.goal = (goal, goal_yaw)
         ctx.drive.set_carrying(ctx.world.held is not None)
-        if self.turning_room() < 0.03:
+        if not self.can_turn():
             yield from self.escape()
 
-        def new_follower():
+        def new_follower(previous=None):
             path = plan_path(self.costmap, ctx.pose[:2].copy(), goal, ctx.time)
             self.path = path
             if path is None:
                 return None
-            return PathFollower(path, goal_yaw, self.footprint, max_v=ctx.drive.max_v, max_w=ctx.drive.max_w,
-                                pos_tol=pos_tol)
+            follower = PathFollower(path, goal_yaw, self.footprint, max_v=ctx.drive.max_v, max_w=ctx.drive.max_w,
+                                    pos_tol=pos_tol)
+            if previous is not None:
+                # Keep turning the way we were: flipping direction at every replan makes the robot dither.
+                follower.turn_dir = previous.turn_dir
+            return follower
 
         follower = new_follower()
         if follower is None:
             ctx.drive.halt()
             return NavResult(False, f"no collision-free path to ({goal[0]:.2f}, {goal[1]:.2f})")
-        progress_t, progress_pose, last_check = ctx.time, ctx.pose.copy(), ctx.time
+        progress_t, progress_pose, last_check, last_replan = ctx.time, ctx.pose.copy(), ctx.time, ctx.time
         while True:
             now = ctx.time
             if now - start_time > max_time:
@@ -418,7 +519,9 @@ class Navigator:
             else:
                 blocked_since = None
                 ctx.drive.command(v, w, ctx.dt)
-                if now - last_check > 1.0:
+                # Re-check the path against new sensor data only while actually driving, and not more than
+                # every 3 s: an obstacle revealed bit by bit must not flip the route left/right each second.
+                if now - last_check > 1.0 and now - last_replan > 3.0 and v > 0.05:
                     last_check = now
                     if not self._path_still_free(follower, now):
                         ctx.log("new obstacle on the path, replanning")
@@ -443,11 +546,11 @@ class Navigator:
                     return NavResult(False, "path blocked by an obstacle", replans)
                 if status == "blocked":
                     ctx.log(f"path blocked, replanning ({replans})")
-                follower = new_follower()
+                follower = new_follower(follower)
                 if follower is None:
                     ctx.drive.halt()
                     return NavResult(False, "path blocked and no alternative route", replans)
-                progress_t, progress_pose = ctx.time, ctx.pose.copy()
+                progress_t, progress_pose, last_replan = ctx.time, ctx.pose.copy(), ctx.time
             yield
 
     def dock(self, pose, *, speed: float = 0.12, pos_tol: float = 0.012, yaw_tol: float = 0.02,
@@ -532,9 +635,17 @@ class Navigator:
                 base_xy = target - ideal_reach * np.array([math.cos(yaw), math.sin(yaw)])
                 candidates.append((0.0, np.array([base_xy[0], base_xy[1], yaw])))
         here = self.ctx.pose[:2]
-        free = [(d + 0.1 * np.linalg.norm(p[:2] - here), p) for d, p in candidates
-                if self.footprint_free(p, margin=0.02, now=now)]
-        return [p for _, p in sorted(free, key=lambda item: item[0])]
+        scored = []
+        for d, p in candidates:
+            if not self.footprint_free(p, margin=0.02, now=now):
+                continue
+            # Avoid slots the robot cannot turn its way out of (between a chair and a wall, say):
+            # its pre-approach point, 0.35 m back, should leave room to turn in place.
+            heading = np.array([math.cos(p[2]), math.sin(p[2])])
+            room = self.turning_room(p[:2] - 0.35 * heading)
+            penalty = 0.0 if room >= 0.08 else 0.6 + 2.0 * (0.08 - room)
+            scored.append((d + 0.1 * np.linalg.norm(p[:2] - here) + penalty, p))
+        return [p for _, p in sorted(scored, key=lambda item: item[0])]
 
     def observation_poses(self, surface: Surface, *, distance: float = 0.75) -> list[np.ndarray]:
         """Poses facing the surface from each accessible side, with room to turn in place there."""
@@ -597,16 +708,35 @@ class Navigator:
         xy = self.ctx.pose[:2] if xy is None else xy
         return float(self.costmap.distance(self.ctx.time).bilinear(xy[0], xy[1])) - self.circumradius
 
-    def escape(self, max_distance: float = 0.5):
-        """Generator: back straight out of a tight spot (e.g. after docking at a table) until the
-        robot can turn in place. Checks the rear with the LiDAR as it goes."""
+    def _probe(self) -> "PathFollower":
+        here = self.ctx.pose[:2].copy()
+        return PathFollower(np.array([here, here + 1e-3]), None, self.footprint, max_v=0.1, max_w=1.0)
+
+    def can_turn(self) -> bool:
+        """Room to turn in place, by the map AND by what the ranging sensors see right now
+        (a door jamb 5 cm from the side is in the map, but only the sensors know how close it is)."""
+        if self.turning_room() < 0.03:
+            return False
+        probe, obstacles = self._probe(), self.obstacles_base()
+        return any(probe.rotation_free(a, obstacles) for a in (math.pi, -math.pi))
+
+    def escape(self, max_distance: float = 0.6):
+        """Generator: drive straight out of a tight spot (e.g. after docking at a table, or wedged in
+        a doorway) until the robot can turn in place: backwards if the rear is clear, else forwards."""
         ctx = self.ctx
         start = ctx.pose[:2].copy()
-        follower = PathFollower(np.array([start, start + 1e-3]), None, self.footprint, max_v=0.1, max_w=0.1)
-        while self.turning_room() < 0.07 and np.linalg.norm(ctx.pose[:2] - start) < max_distance:
-            if follower.time_to_collision(-0.1, 0.0, self.obstacles_base(), horizon=0.6) < 0.6:
-                break
-            ctx.drive.command(-0.1, 0.0, ctx.dt)
+        probe = self._probe()
+        # Head (forwards or backwards) towards more open space.
+        heading = np.array([math.cos(ctx.pose[2]), math.sin(ctx.pose[2])])
+        ahead, behind = self.turning_room(start + 0.2 * heading), self.turning_room(start - 0.2 * heading)
+        direction = 1.0 if ahead > behind + 0.02 else -1.0
+        while not self.can_turn() and np.linalg.norm(ctx.pose[:2] - start) < max_distance:
+            obstacles = self.obstacles_base()
+            if probe.time_to_collision(0.1 * direction, 0.0, obstacles, horizon=0.6) < 0.6:
+                if probe.time_to_collision(-0.1 * direction, 0.0, obstacles, horizon=0.6) < 0.6:
+                    break
+                direction = -direction
+            ctx.drive.command(0.1 * direction, 0.0, ctx.dt)
             yield
         ctx.drive.halt()
-        return self.turning_room() >= 0.0
+        return self.can_turn()

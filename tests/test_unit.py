@@ -126,6 +126,15 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(steps(self.planner.plan("Dừng lại!")), [("stop_robot", {})])
         self.assertEqual(steps(self.planner.plan("Pin còn bao nhiêu?")), [("get_robot_status", {})])
 
+    def test_fold_and_grasp_are_told_apart(self):
+        # Without diacritics both "gập" (fold) and "gắp" (grasp) read "gap".
+        self.assertEqual(steps(self.planner.plan("Đi vào phòng làm việc rồi gập lại thành logo")),
+                         [("navigate_to", {"target": "office"}), ("fold_robot", {})])
+        self.assertEqual(steps(self.planner.plan("Gắp cái chai đỏ"))[-1], ("pick_object", {"object": "red bottle"}))
+        self.assertEqual(steps(self.planner.plan("Đứng dậy rồi đi vào bếp")),
+                         [("unfold_robot", {}), ("navigate_to", {"target": "kitchen"})])
+        self.assertEqual(steps(self.planner.plan("Dừng lại")), [("stop_robot", {})])
+
     def test_unknown_task_not_fabricated(self):
         with self.assertRaises(UnsupportedTask):
             self.planner.plan("Clean my entire house")

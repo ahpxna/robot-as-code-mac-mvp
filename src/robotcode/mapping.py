@@ -345,16 +345,20 @@ def build_prior_map(world_name: str, *, robot_height: float = 1.45, lidar_height
                     rooms, surfaces, places, dict(world.get("user", {})), tuple(world["start_pose"]))
 
 
-def get_prior_map(world_name: str, *, lidar_height: float = 0.175, rebuild: bool = False) -> PriorMap:
-    """Load build/maps/<world>.npz, rebuilding it when the world description changed."""
+def get_prior_map(world_name: str, *, lidar_height: float = 0.175, robot_height: float = 1.45,
+                  rebuild: bool = False) -> PriorMap:
+    """Load build/maps/<world>_<lidar>_<height>.npz, rebuilding it when the world description changed.
+
+    The map depends on the robot: what is an obstacle for a 1.4 m robot (a table top) is a roof
+    for a 15 cm one, and the LiDAR slice sits at that robot's scanner height."""
     world = load_world(world_name)
     directory = BUILD_DIR / "maps"
-    path = directory / f"{world['name']}_{int(round(lidar_height * 1000))}mm.npz"
+    path = directory / f"{world['name']}_{int(round(lidar_height * 1000))}mm_h{int(round(robot_height * 100))}cm.npz"
     sources = [world["world_path"], world["dir"] / "semantic.yaml"]
     fresh = path.exists() and all(path.stat().st_mtime >= s.stat().st_mtime for s in sources)
     if fresh and not rebuild:
         return PriorMap.load(path)
-    prior = build_prior_map(world_name, lidar_height=lidar_height)
+    prior = build_prior_map(world_name, lidar_height=lidar_height, robot_height=robot_height)
     saved = prior.save(directory)
     saved.replace(path)
     (directory / f"{world['name']}.pgm").replace(path.with_suffix(".pgm"))

@@ -82,6 +82,35 @@ sensors:
     range_max: 8.0
     rate_hz: 10
     noise_std: 0.008
+  lidar_3d:                           # hemispherical 3D LiDAR on the head (Unitree L1 / Livox class)
+    x: 0.17
+    z: 1.41
+    channels: 16
+    vertical_deg: [-75, 5]            # mostly looking down: floor clutter and overhangs near the robot
+    horizontal_beams: 180
+    range_min: 0.25
+    range_max: 8.0
+    rate_hz: 5
+    noise_std: 0.01
+  tof_ring:                           # 8 time-of-flight distance sensors around the chassis (VL53L1X class)
+    z: 0.06
+    range_max: 1.2
+    noise_std: 0.004
+    mounts:                           # [x, y, heading_deg] in the base frame
+      - [0.25, 0.0, 0]
+      - [0.25, 0.19, 45]
+      - [0.25, -0.19, -45]
+      - [0.15, 0.20, 90]
+      - [0.15, -0.20, -90]
+      - [-0.25, 0.19, 135]
+      - [-0.25, -0.19, -135]
+      - [-0.25, 0.0, 180]
+  wrist_camera:                       # eye-in-hand RGB-D for the last centimetres of a grasp
+    pitch_deg: 25
+    fovy_deg: 70
+    width: 160
+    height: 120
+    depth_noise_std: 0.002
   imu:
     gyro_noise_std: 0.002             # rad/s
     gyro_bias_std: 0.0005             # rad/s, constant per episode

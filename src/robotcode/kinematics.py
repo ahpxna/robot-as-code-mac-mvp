@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .description import arm_joint_names, robot_xml
+from .description import actuated_joint_names, arm_joint_names, robot_xml
+from .legged import is_legged, posture_joints
 
 
 class Kinematics:
@@ -20,14 +21,19 @@ class Kinematics:
         self.model = mujoco.MjModel.from_xml_string(robot_xml(spec, floating=False))
         self.data = mujoco.MjData(self.model)
         self.arm_joints = arm_joint_names(spec)
-        self._qadr = {j: int(self.model.joint(j).qposadr[0]) for j in self.arm_joints}
+        self.joints = actuated_joint_names(spec)
+        self._qadr = {j: int(self.model.joint(j).qposadr[0]) for j in self.joints}
         self._dof = [int(self.model.joint(j).dofadr[0]) for j in self.arm_joints]
-        self.limits = {j: tuple(self.model.jnt_range[self.model.joint(j).id]) for j in self.arm_joints}
+        self.limits = {j: tuple(self.model.jnt_range[self.model.joint(j).id]) for j in self.joints}
         self._update(self.default_joints())
 
     def default_joints(self) -> dict[str, float]:
+        """Driving configuration: arm stowed, legs in the stand posture."""
         stow = (self.spec.get("arm") or {}).get("stow", {})
-        return {j: float(stow.get(j, self.model.qpos0[self._qadr[j]])) for j in self.arm_joints}
+        q = {j: float(stow.get(j, self.model.qpos0[self._qadr[j]])) for j in self.arm_joints}
+        if is_legged(self.spec):
+            q.update(posture_joints(self.spec, "stand"))
+        return q
 
     def clamp(self, q: dict[str, float]) -> dict[str, float]:
         return {j: float(np.clip(v, *self.limits[j])) for j, v in q.items()}
@@ -97,6 +103,19 @@ class Kinematics:
             c = d.geom_xpos[g]
             boxes.append((float(c[0] - ext[0]), float(c[0] + ext[0]), float(c[1] - ext[1]), float(c[1] + ext[1])))
         return boxes
+
+    def height(self, q: dict[str, float] | None = None) -> float:
+        """Top of the highest collision geom above the floor (the clearance the robot needs)."""
+        self._update(q or self.default_joints())
+        m, d = self.model, self.data
+        top = 0.0
+        for g in range(m.ngeom):
+            if m.geom_contype[g] == 0 and m.geom_conaffinity[g] == 0:
+                continue
+            half = np.abs(d.geom_xmat[g].reshape(3, 3)) @ (
+                m.geom_size[g][:3] if m.geom_type[g] != self._mj.mjtGeom.mjGEOM_SPHERE else np.full(3, m.geom_size[g][0]))
+            top = max(top, float(d.geom_xpos[g][2] + half[2]))
+        return top
 
     def footprint(self, q: dict[str, float] | None = None) -> tuple[float, float, float, float]:
         """Bounding box (xmin, xmax, ymin, ymax) of the robot's collision geoms in the base frame."""

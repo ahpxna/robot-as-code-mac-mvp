@@ -28,6 +28,7 @@ types:
     radius: 0.040
     mass: 0.18
     friction: 1.2
+    rolling_friction: 0.004         # a real apple is not a perfect sphere: it barely rolls
     aliases: [apple, fruit, táo, quả táo, trái táo]
 
 colors:

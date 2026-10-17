@@ -81,6 +81,15 @@ def judge(sim, task: dict) -> list[dict]:
             room = prior.room_of(pose[0], pose[1])
             ok = room == arg
             detail = f"robot in {room}"
+        elif kind == "robot_posture":
+            from .legged import posture_joints
+            spec = sim.scene.robot_spec
+            expected = posture_joints(spec, arg)
+            worst = max(abs(float(sim.data.joint(j).qpos[0]) - v) for j, v in expected.items())
+            body_z = float(sim.data.body("base").xpos[2])
+            target_z = spec["base"]["postures"][arg]["body_height"]
+            ok = worst < 0.15 and abs(body_z - target_z) < 0.015
+            detail = f"joints within {math.degrees(worst):.0f} deg of {arg}, body at {body_z * 100:.1f} cm"
         elif kind == "robot_reports_success":
             ok = bool(sim.stack.result is not None and getattr(sim.stack.result, "success", False)) == bool(arg)
             detail = f"robot reported {'success' if ok == bool(arg) and arg else 'failure'}"

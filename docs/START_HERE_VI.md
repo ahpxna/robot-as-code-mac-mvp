@@ -56,6 +56,35 @@ Ví dụ lệnh robot hiểu:
 
 Lệnh không làm được (ví dụ “dọn cả nhà”) sẽ bị từ chối kèm lý do, không bịa kế hoạch.
 
+## Robot nhện (gập thành logo)
+
+`robots/spider_bot.yaml` là robot thứ hai: nhện 8 chân, mỗi chân 3 servo (24 servo), nặng 1.4 kg, có IMU, cảm biến chạm ở 8 bàn chân, LiDAR mini và camera. Nó chạy **cùng phần mềm** với robot giúp việc: định vị, điều hướng, nhận diện, planner đều dùng lại; chỉ thêm IK chân và bộ tạo dáng đi (tetrapod xen kẽ, như nhện thật).
+
+```bash
+# Đi vào phòng làm việc rồi gập lại thành logo
+mjpython -m robotcode.cli --scenario spider_fold_in_office
+
+# Tìm quả táo lăn xuống gầm bàn bếp (nhện cao 12 cm nên chui được gầm bàn)
+python -m robotcode.cli --headless --scenario spider_find_under_table
+
+# Điều khiển nhện bằng lời: "gập lại", "biến thành logo", "mở ra rồi đi vào bếp", "đứng dậy"
+mjpython -m robotcode.cli --scenario spider_fold_in_office --interactive
+```
+
+Khi gập: thân hạ xuống nằm trên sàn, rồi từng nhóm 4 chân nhấc lên và thu vào, chân trước quét về trước, chân sau quét ra sau, tạo dáng logo con nhện. Đường gập được kiểm tra trước để các chân không va vào nhau. Lệnh đi lại khi đang gập sẽ tự mở ra trước. Planner phân biệt **"gập"** (gấp chân) với **"gắp"** (gắp đồ), kể cả khi gõ không dấu thì vẫn ưu tiên đúng ngữ cảnh.
+
+## Cảm biến của robot giúp việc
+
+Ngoài camera RGB-D ở đầu, LiDAR 2D, IMU, encoder, cảm biến lực ở ngón kẹp và bumper, robot có thêm:
+
+| Cảm biến | Để làm gì | Đo được |
+|---|---|---|
+| LiDAR 3D 16 tia trên đầu (nhìn xuống) | thấy vật thấp hơn hoặc cao hơn mặt quét LiDAR 2D | Có: vượt hộp giày 9 cm + kệ thấp, 0 va chạm. Tắt đi: chui gầm kệ, đâm, kẹt (`tasks/ablation/`) |
+| 8 cảm biến ToF quanh thân | an toàn tầm gần khi docking, lùi, đi qua cửa hẹp | phát hiện khung cửa cách 6 cm |
+| Camera cổ tay | căn lại vị trí vật 10 cm trước khi kẹp | sai 3–4 mm dù niềm tin ban đầu lệch 22 mm |
+
+Vật đang kẹp trong tay được lọc khỏi dữ liệu LiDAR 3D (giống "attached object" của MoveIt), nếu không robot sẽ tưởng chính cái chai mình cầm là vật cản.
+
 ## Kiểm thử và đo lường
 
 ```bash

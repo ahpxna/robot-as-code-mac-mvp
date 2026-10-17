@@ -194,6 +194,46 @@ Limits of the learned detector today:
 * Detection runs synchronously inside `look()`; the simulated clock does not
   advance meanwhile. On a robot `look()` would hold still ~0.5 s longer.
 
+## Extra sensors on the rover, and what they taught
+
+* **3D LiDAR** (16 channels, looking down from the head) feeds a separate 3D costmap layer, so a 2D
+  beam passing *over* a low box cannot clear it. Lessons: mask returns from the robot's own body
+  and from the **object it is holding** (only that object's volume: masking a wider radius blinded
+  the robot to the obstacle its load was about to hit); and require two returns per cell per sweep,
+  because range noise lifts the odd floor return above any small height threshold and those
+  phantom cells blocked approach poses.
+* **ToF ring** (8 short-range sensors at 6 cm) sees what is right beside the chassis. It made
+  turning in tight spots *harder* until rotation checks covered the whole turn (not its first
+  1.2 rad), used a smaller margin for slow in-place turns than for driving, and the escape
+  manoeuvre drove towards open space (forwards or backwards) until a half turn was free.
+* **Wrist camera** checks for neighbours before the arm sweeps over a table and refines the object
+  position (3-4 mm) before grasping; it is skipped next to a same-coloured neighbour, where the two
+  blobs merge at 15 cm.
+* The object memory merges detections of the same colour at the same spot across *confusable*
+  shapes only (cup / apple / can), and a grasp never continues if its target's type changes.
+
+## Legged robots
+
+`robots/spider_bot.yaml` (8 legs × coxa/femur/tibia) runs the same stack. What changes is
+isolated behind the interfaces the wheeled robot already used:
+
+* **Description** – `base.kind: legged`: body ellipsoids, leg chains with position servos,
+  encoders, effort sensors and foot touch sensors are generated from the YAML. Postures are
+  given as foot positions (`stand`, `fold`); joint angles always come from the leg IK.
+* **Locomotion** – `legged.GaitController` implements the same drive interface as the
+  differential-drive controller (`command(v, w)`, `halt()`, limits), so navigation, docking and
+  skills are unchanged. Inside: alternating-tetrapod gait, stance feet slide under the body,
+  swing feet arc to a Raibert-style touchdown, analytic 3-joint IK per leg.
+* **State estimation** – no wheel encoders: odometry uses the body velocity the gait produces
+  and the gyro; LiDAR scan matching corrects it as before. The body height above the floor
+  (needed to turn camera/LiDAR points into heights) comes from the kinematics of the feet in
+  contact (`RobotStack.base_height`).
+* **Maps per robot** – the prior map is rasterised for each robot's height and LiDAR height,
+  so table tops are obstacles for the 1.4 m rover but a roof for the 12 cm spider.
+* **Transform (fold / unfold)** – a capability (`transform`) with its own skills; the body is
+  lowered onto the floor with feet planted, then each tetrapod group lifts and tucks its feet.
+  `tests/test_legged.py` checks the whole fold path for self-collision with `mj_geomDistance`.
+
 ## Sim-to-real path
 
 The HAL is the boundary. A hardware driver implements `RobotInterface`; in ROS 2

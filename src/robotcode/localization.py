@@ -18,15 +18,23 @@ from .math_utils import wrap_angle
 
 
 class Odometry:
-    def __init__(self, spec: dict):
-        wheels = spec["base"]["wheels"]
-        self.radius = wheels["radius"]
-        self.track = wheels["track"]
+    """Wheeled robots: distance from the wheel encoders. Legged robots (no wheels): distance from the
+    body velocity the gait is producing. Heading change always comes from the gyro."""
+
+    def __init__(self, spec: dict, velocity_source=None):
+        wheels = spec["base"].get("wheels")
+        self.radius = wheels["radius"] if wheels else None
+        self.velocity_source = velocity_source
         self._prev_wheels: np.ndarray | None = None
         self._prev_stamp: float | None = None
 
     def update(self, state: RobotState) -> tuple[float, float]:
         """Return (forward distance, heading change) since the previous call."""
+        if self.radius is None:
+            dt = 0.0 if self._prev_stamp is None else state.stamp - self._prev_stamp
+            self._prev_stamp = state.stamp
+            v = self.velocity_source() if self.velocity_source else 0.0
+            return v * dt, float(state.gyro[2]) * dt
         if self._prev_wheels is None:
             self._prev_wheels, self._prev_stamp = state.wheel_position.copy(), state.stamp
             return 0.0, 0.0
@@ -113,8 +121,8 @@ class ScanMatcher:
 class Localizer:
     """Pose of the base in the map frame (x, y, yaw), plus a covariance-free health signal."""
 
-    def __init__(self, prior: PriorMap, spec: dict, initial_pose):
-        self.odometry = Odometry(spec)
+    def __init__(self, prior: PriorMap, spec: dict, initial_pose, velocity_source=None):
+        self.odometry = Odometry(spec, velocity_source)
         self.matcher = ScanMatcher(prior)
         self.pose = np.array(initial_pose, dtype=float)
         self.initialized = False

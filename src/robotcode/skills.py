@@ -10,14 +10,18 @@ LLM planner sees as its tool list and what plan validation checks against.
 """
 from __future__ import annotations
 
+import colorsys
 import math
 from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
+from scipy import ndimage
 
+from .legged import transform
 from .mapping import Surface, normalize_text
 from .math_utils import to_base, to_map
+from .perception import GeometricDetector, _hsv
 
 
 @dataclass
@@ -99,7 +103,7 @@ def _camera_sees(ctx, point_map: np.ndarray, pose: np.ndarray) -> bool:
     """Would a point be inside the camera frustum (and in range) from the current pose?"""
     cam = ctx.spec["sensors"]["head_camera"]
     cam_pos, cam_rot = ctx.kin.camera("head_camera", ctx.state.joints)
-    p_base = np.array([*to_base(pose, point_map[None, :2])[0], point_map[2]])
+    p_base = np.array([*to_base(pose, point_map[None, :2])[0], point_map[2] - ctx.base_height])
     pc = cam_rot.T @ (p_base - cam_pos)
     depth = -pc[2]
     if depth < 0.3 or depth > 2.5:
@@ -142,12 +146,38 @@ def _settle(ctx, seconds: float):
 # ---------------------------------------------------------------------------
 # Skills
 # ---------------------------------------------------------------------------
+def ensure_standing(ctx):
+    """Generator: a folded legged robot unfolds before it walks anywhere. Returns an error or None."""
+    if getattr(ctx.drive, "posture", "stand") == "stand":
+        return None
+    ctx.log("unfolding to walk")
+    ok, detail = yield from transform(ctx, "stand")
+    return None if ok else f"could not unfold: {detail}"
+
+
+@skill("fold_robot", "Fold the legs in tight against the body into the compact 'logo' posture (legged robots).",
+       {}, needs=("transform",))
+def fold_robot(ctx):
+    ok, detail = yield from transform(ctx, "fold")
+    return SkillResult(ok, ("folded into logo mode: " if ok else "folding failed: ") + detail)
+
+
+@skill("unfold_robot", "Unfold from the 'logo' posture and stand up ready to walk (legged robots).",
+       {}, needs=("transform",))
+def unfold_robot(ctx):
+    ok, detail = yield from transform(ctx, "stand")
+    return SkillResult(ok, ("standing: " if ok else "unfolding failed: ") + detail)
+
+
 @skill("navigate_to", "Drive to a room, a piece of furniture, a named place or the user.",
        {"target": "room / surface / place name, or 'user'"}, required=("target",), needs=("navigate",))
 def navigate_to(ctx, target: str):
     tgt = resolve_target(ctx, target)
     if tgt is None:
         return SkillResult(False, f"unknown destination {target!r}")
+    error = yield from ensure_standing(ctx)
+    if error:
+        return SkillResult(False, error)
     if ctx.arm is not None:
         yield from ctx.arm.stow(holding=ctx.world.held is not None)
     if tgt.kind == "room":
@@ -170,6 +200,9 @@ def navigate_to(ctx, target: str):
 @skill("look_around", "Capture camera images (turning in place) and report the objects seen.",
        {}, needs=("perceive",))
 def look_around(ctx):
+    error = yield from ensure_standing(ctx)
+    if error:
+        return SkillResult(False, error)
     seen = {}
     for k in range(6):
         for obj in (yield from look(ctx)):
@@ -191,6 +224,9 @@ def find_object(ctx, object: str, room: str | None = None, surface: str | None =
         return SkillResult(False, f"I do not know what {object!r} is")
     otype, color = parsed
     label = describe_object(otype, color)
+    error = yield from ensure_standing(ctx)
+    if error:
+        return SkillResult(False, error)
 
     def matches():
         return ctx.world.query(otype, color)
@@ -286,6 +322,51 @@ def _choose_grasp_approach(ctx, obj, poses: list[np.ndarray], x0: float):
     return None, None
 
 
+def wrist_locate(ctx, obj, radius: float) -> np.ndarray | None:
+    """Object centre (map xy) from the wrist camera, or None (no wrist camera, colourless object,
+    too few pixels). Colour pixels near the expected position are back-projected with the depth image;
+    the visible front surface sits ~pi/4 of a radius closer than the axis, so shift back along the view."""
+    if "wrist_camera" not in ctx.spec["sensors"] or obj.color not in ctx.catalog["colors"]:
+        return None
+    rgba = ctx.catalog["colors"][obj.color]["rgba"]
+    hue, sat, _ = colorsys.rgb_to_hsv(*rgba[:3])
+    if sat < 0.4:
+        return None
+    frame = ctx.hal.capture_rgbd("wrist_camera")
+    h, s, v = _hsv(frame.rgb)
+    p = ctx.catalog.get("perception", {})
+    dh = np.abs((h - hue * 360.0 + 180.0) % 360.0 - 180.0)
+    mask = (dh <= p.get("hue_tolerance_deg", 14)) & (s >= p.get("min_saturation", 0.5)) & \
+           (v >= p.get("min_value", 0.18)) & (frame.depth > 0)
+    if mask.sum() < 30:
+        return None
+    cam_pos, cam_rot = ctx.kin.camera(frame.camera, ctx.state.joints)
+    cam_pos = cam_pos + np.array([0.0, 0.0, ctx.base_height])
+    # A same-coloured neighbour (red cup beside the red bottle) must not pull the estimate: take the
+    # connected blob whose 3D centroid is closest to where the object is expected.
+    labels, n = ndimage.label(mask, structure=np.ones((3, 3), dtype=int))
+    best, best_dist = None, 0.03
+    for k in range(1, n + 1):
+        vs, us = np.nonzero(labels == k)
+        if len(vs) < 20:
+            continue
+        d = frame.depth[vs, us]
+        keep = np.abs(d - np.median(d)) < 0.05          # drop silhouette pixels with background depth
+        xy, _ = GeometricDetector.back_project(us[keep], vs[keep], d[keep], frame, cam_pos, cam_rot, ctx.pose)
+        if len(xy) < 20:
+            continue
+        dist = float(np.linalg.norm(xy.mean(axis=0) - obj.position[:2]))
+        if dist < best_dist + radius:
+            best, best_dist = xy, dist - radius
+    if best is None:
+        return None
+    centre = best.mean(axis=0)
+    cam_xy = to_map(ctx.pose, cam_pos[None, :2])[0]
+    bearing = centre - cam_xy
+    bearing /= max(float(np.linalg.norm(bearing)), 1e-6)
+    return centre + bearing * (math.pi / 4) * radius
+
+
 def _grasp_height(ctx, otype: str) -> float:
     t = ctx.catalog["types"][otype]
     height = 2 * t["radius"] if t["shape"] == "sphere" else t["height"]
@@ -327,7 +408,8 @@ def pick_object(ctx, object: str):
             continue
         # Re-observe from close range: the object may have moved, or the map pose be slightly off.
         seen = yield from look(ctx, forget=False)
-        close = [o for o in seen if o.id == obj.id]
+        # Same belief AND still the kind of object that was asked for: never switch target mid-task.
+        close = [o for o in seen if o.id == obj.id and o.type == otype and o.color == obj.color]
         if not close:
             if obj.id not in ctx.world.objects:
                 return SkillResult(False, f"the {obj.label} is no longer there", {"needs": "find_object"})
@@ -357,8 +439,41 @@ def pick_object(ctx, object: str):
         if err > 0.01:
             ctx.log(f"{obj.label} out of reach from here (IK error {err:.3f} m)")
             continue
-        # Raise to grasp height first (clear of the table), centre laterally, then extend.
-        err = yield from ctx.arm.move_to(target, order=("lift", "side"))
+        # Raise to grasp height (clear of the table) and centre laterally, arm still retracted.
+        yield from ctx.arm.move_joints({"lift": q["lift"]})
+        yield from ctx.arm.move_joints({"side": q["side"]})
+        # Pre-grasp check with the wrist camera, before anything sweeps over the table: neighbours hidden
+        # behind the object from the head camera often show up from here. If the fingers would hit one,
+        # approach from somewhere else instead.
+        if "wrist_camera" in ctx.spec["sensors"] and ctx.detector is not None:
+            wrist_frame = ctx.hal.capture_rgbd("wrist_camera")
+            neighbours = [d for d in ctx.detector.detect(wrist_frame, ctx.pose.copy(), ctx.state.joints)
+                          if np.linalg.norm(d.position[:2] - obj.position[:2]) > ctx.world.SAME_SPOT]
+            ctx.world.integrate(neighbours)
+            clear_here, _ = _choose_grasp_approach(ctx, obj, [ctx.pose.copy()], x0)
+            if clear_here is None:
+                ctx.log(f"wrist camera: something next to the {obj.label} is in the fingers' way; re-approaching")
+                yield from ctx.arm.stow()
+                continue
+        err = yield from ctx.arm.move_to(target - np.array([0.10, 0.0, 0.0]), order=("lift", "side"))
+        if err is None or err > 0.02:
+            ctx.log(f"arm could not reach the pre-grasp pose (error {err})")
+            yield from ctx.arm.stow()
+            continue
+        # Eye-in-hand refinement of the last centimetres (skipped when a same-coloured neighbour stands
+        # close by: at 15 cm the two blobs merge).
+        twins = [o for o in ctx.world.objects.values() if o.id != obj.id and not o.held and o.color == obj.color
+                 and np.linalg.norm(o.position[:2] - obj.position[:2]) < 0.15]
+        refined = None if twins else wrist_locate(ctx, obj, radius)
+        if refined is not None:
+            shift = float(np.linalg.norm(refined - obj.position[:2]))
+            if shift < 0.04:
+                if shift > 0.004:
+                    ctx.log(f"wrist camera: {obj.label} is {shift * 100:.1f} cm from where the head camera put it")
+                obj.position[:2] = refined
+                target[:2] = to_base(ctx.pose, refined[None, :])[0]
+                target[0] -= max(0.0, radius + palm_gap - finger_len / 2)
+        err = yield from ctx.arm.move_to(target, order=("side",))
         if err is None or err > 0.02:
             ctx.log(f"arm could not reach the grasp pose (error {err})")
             yield from ctx.arm.stow()

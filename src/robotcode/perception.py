@@ -66,6 +66,7 @@ class ObjectBelief:
     seen_count: int = 1
     held: bool = False
     history: list = field(default_factory=list)
+    fit_error: float = float("inf")     # best shape-classification fit seen so far
 
     @property
     def label(self) -> str:
@@ -128,6 +129,7 @@ class GeometricDetector:
         start = time.perf_counter()
         self.frames += 1
         cam_pos, cam_rot = self.ctx.kin.camera(frame.camera, joints)
+        cam_pos = cam_pos + np.array([0.0, 0.0, self.ctx.base_height])     # base frame -> height above floor
         detections = [d for d in self._detect(frame, pose, cam_pos, cam_rot)
                       if not (exclude and any(np.linalg.norm(d.position[:2] - e[:2]) < 0.12 for e in exclude))]
         self.busy_s += time.perf_counter() - start
@@ -148,10 +150,12 @@ class GeometricDetector:
 
     def measure(self, xy, z, cam_pos, pose, surface: Surface | None = None) -> Blob | None:
         center_guess = np.median(xy, axis=0)
+        top_z = float(np.percentile(z, 97))
         if surface is None:
             surface = self.ctx.prior.surface_at(center_guess[0], center_guess[1], margin=0.06)
+            if surface is not None and top_z < surface.top_z + 0.02:
+                surface = None          # below the table top: the object is on the floor under it
         support_z = surface.top_z if surface else 0.0
-        top_z = float(np.percentile(z, 97))
         height = top_z - support_z
         if height < 0.025:
             return None
@@ -306,16 +310,34 @@ class WorldModel:
         return sorted(out, key=lambda o: -o.last_seen)
 
     # ---- belief update ----------------------------------------------------------------
+    SAME_SPOT = 0.045       # centres of two solid objects are >= 6.6 cm apart; detections err by ~1 cm
+
+    def _confusable(self, a: str, b: str) -> bool:
+        """Shapes the classifier can mix up from some viewpoints (similar height: cup / apple / can),
+        unlike a 20 cm bottle vs a 10 cm cup."""
+        types = self.catalog["types"]
+
+        def height(t):
+            return 2 * types[t]["radius"] if types[t]["shape"] == "sphere" else types[t]["height"]
+        return abs(height(a) - height(b)) < 0.045
+
     def integrate(self, detections: list[Detection]) -> list[ObjectBelief]:
         touched = []
         for det in detections:
             match, best = None, self.MATCH_DISTANCE
             for o in self.objects.values():
-                if o.held or o.type != det.type or o.color != det.color:
+                if o.held or o.color != det.color:
                     continue
                 dist = float(np.linalg.norm(o.position[:2] - det.position[:2]))
+                if o.type != det.type and (dist >= self.SAME_SPOT or not self._confusable(o.type, det.type)):
+                    continue
                 if dist < best:
                     match, best = o, dist
+            if match is not None and match.type != det.type:
+                # Seen from another angle the shape classifier changed its mind (cup vs apple): keep
+                # one object and the type of the better geometric fit.
+                if det.fit_error < match.fit_error:
+                    match.type = det.type
             if match is None:
                 self._counter += 1
                 match = ObjectBelief(f"{det.color}_{det.type}_{self._counter}", det.color, det.type,
@@ -327,6 +349,7 @@ class WorldModel:
             match.position = (1 - w) * match.position + w * det.position
             match.support, match.room = det.support, self.prior.room_of(*match.position[:2])
             match.last_seen, match.seen_count = det.stamp, match.seen_count + 1
+            match.fit_error = min(match.fit_error, det.fit_error)
             touched.append(match)
         return touched
 

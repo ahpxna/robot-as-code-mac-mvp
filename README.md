@@ -1,11 +1,17 @@
 # Robot-as-Code (macOS, MuJoCo)
 
-A household mobile manipulator built entirely in software and defined as code:
-robot description (YAML → generated MJCF), house, objects and missions are
-configuration files; physics, sensors, motors and contacts are simulated in
-MuJoCo; the onboard software (localisation, navigation, perception, grasping,
-safety, task planning) runs against a hardware abstraction layer that a real
-robot driver can implement later.
+Robots built entirely in software and defined as code: robot descriptions
+(YAML → generated MJCF), the house, objects and missions are configuration
+files; physics, sensors, motors and contacts are simulated in MuJoCo; one
+onboard software stack (localisation, navigation, perception, grasping, gait,
+safety, task planning) runs every robot against a hardware abstraction layer
+that a real robot driver can implement later.
+
+| Robot | Body | Can |
+|---|---|---|
+| `helper_rover` | 25 kg wheeled mobile manipulator, lift + telescoping arm, gripper | fetch and deliver objects |
+| `spider_bot` | 1.4 kg eight-legged walker, 24 servos | walk under furniture, search, fold into a compact spider "logo" |
+| `scout` | arm-less wheeled rover | patrol and search |
 
 You give it a task in Vietnamese or English:
 
@@ -46,6 +52,14 @@ python -m unittest discover -s tests -v
 In the viewer, blue dots are the planned path, yellow rings the objects the
 robot remembers, the green arrow its believed pose.
 
+The spider robot (same commands, another task file or `--scenario` with `robot: spider_bot`):
+
+```bash
+mjpython -m robotcode.cli --scenario spider_fold_in_office          # walk to the office, fold into the logo
+python -m robotcode.cli --headless --scenario spider_find_under_table   # finds an apple under the kitchen table
+mjpython -m robotcode.cli --scenario spider_fold_in_office --interactive   # then type: "Mở ra rồi đi vào bếp"
+```
+
 Optional LLM planner (writes a JSON plan of skill calls that is validated
 before anything moves): `pip install -e '.[llm]'`, set `OPENAI_API_KEY`, add
 `--planner llm`. It costs API usage; the rule planner is the default.
@@ -70,33 +84,40 @@ in `robots/*.yaml`, or `--detector` (highest precedence). See
 
 | Layer | Implementation |
 |---|---|
-| Robot | `robots/helper_rover.yaml`: 25 kg differential drive, front/rear ball casters, 150 Wh battery model, lift 0.24–1.12 m + telescoping reach 0.45 m + wrist shift, parallel gripper (25 N), RGB-D head camera, 270° LiDAR, IMU, encoders, finger force sensors, bumper. `robots/scout.yaml`: arm-less rover on the same software. |
+| Robots | `robots/helper_rover.yaml`: 25 kg differential drive, front/rear ball casters, 150 Wh battery model, lift 0.24–1.12 m + telescoping reach 0.45 m + wrist shift, parallel gripper (25 N), RGB-D head camera, 270° 2D LiDAR, 16-channel 3D LiDAR, 8 time-of-flight sensors, wrist camera, IMU, encoders, finger force sensors, bumper. `robots/spider_bot.yaml`: 8 legs × 3 servos, foot contact sensors, mini LiDAR, camera, IMU. `robots/scout.yaml`: arm-less rover. |
 | World | 3-room apartment (living room, kitchen, office), furniture, a seated user; unmapped obstacles per task |
 | Physics | MuJoCo 3: gravity, friction cones, contacts, torque-limited motors, joint limits |
 | Localisation | wheel + gyro odometry, LiDAR scan matching on a signed distance field (mm-level at rest) |
-| Navigation | costmap + live LiDAR obstacle layer, Dijkstra planner, pure pursuit, collision forecast, stall detection, replanning |
+| Navigation | per-robot map (a 12 cm spider walks under tables), costmap with 2D LiDAR and 3D (3D LiDAR / ToF) obstacle layers, Dijkstra planner, pure pursuit, full-sweep rotation checks, stall detection, escape manoeuvres, replanning |
+| Locomotion | wheels: differential-drive controller; legs: analytic 3-joint leg IK, alternating-tetrapod gait, posture transitions (fold / unfold) with self-collision-checked paths |
 | Perception | RGB-D detector → 3D points → shape classification (bottle / cup / can / apple), object memory. Detector: HSV colour segmentation (default) or open-vocabulary OWLv2 boxes (`--detector learned`) with the same depth geometry |
-| Manipulation | IK from the robot description, collision-aware approach selection, force-sensed grasp check, carry monitoring, camera-verified placing |
+| Manipulation | IK from the robot description, collision-aware approach selection (angled approaches past neighbours), wrist-camera refinement of the last centimetres, force-sensed grasp check, carry monitoring, camera-verified placing |
 | Agent | VN/EN rule planner (accent-insensitive), optional LLM planner, executor with recovery, honest mission report |
 | Evaluation | referee: success criteria per task, collisions, object bumps, false successes, localisation error, energy |
 
-## Benchmark (20 random seeds per task)
+## Benchmark (20 fresh random seeds per task)
 
 `python -m robotcode.evaluate --episodes 20` (object positions, robot start and
 sensor noise vary with the seed):
 
-| Task | What it exercises | Success | Collisions | False successes | Mean time |
-|---|---|---|---|---|---|
-| `deliver_bottle_to_user` | the Vietnamese headline task: living room table → user | 20/20 | 0 | 0 | 47 s |
-| `fetch_red_bottle_kitchen_to_desk` | red bottle next to a red cup (grounding, clutter) | 20/20 | 0 | 0 | 68 s |
-| `cup_to_drop_zone` | 0.9 m counter pick, floor drop-off | 20/20 | 0 | 0 | 78 s |
-| `apple_desk_to_coffee_table` | sphere grasp, English instruction | 20/20 | 0 | 0 | 64 s |
-| `blocked_corridor` | unmapped obstacle, LiDAR replanning | 20/20 | 0 | 0 | 74 s |
-| `go_to_kitchen` | navigation | 20/20 | 0 | 0 | 10 s |
-| `scout_find_apple` | arm-less robot, same software | 20/20 | 0 | 0 | 71 s |
+| Task | Robot | What it exercises | Success | Collisions | False successes | Mean time |
+|---|---|---|---|---|---|---|
+| `deliver_bottle_to_user` | rover | the Vietnamese headline task: living room table → user | 20/20 | 0 | 0 | 49 s |
+| `fetch_red_bottle_kitchen_to_desk` | rover | red bottle next to a red cup (grounding, clutter) | 20/20 | 0 | 0 | 69 s |
+| `cup_to_drop_zone` | rover | 0.9 m counter pick, floor drop-off | 20/20 | 0 | 0 | 74 s |
+| `apple_desk_to_coffee_table` | rover | sphere grasp, English instruction | 20/20 | 0 | 0 | 65 s |
+| `blocked_corridor` | rover | unmapped obstacle, LiDAR replanning | 20/20 | 0 | 0 | 78 s |
+| `low_obstacles` | rover | clutter below / above the 2D scan plane (3D LiDAR, ToF) | 20/20 | 0 | 0 | 26 s |
+| `go_to_kitchen` | rover | navigation | 20/20 | 0 | 0 | 10 s |
+| `scout_find_apple` | scout | arm-less robot, same software | 20/20 | 0 | 0 | 75 s |
+| `spider_fold_in_office` | spider | eight-legged walking, folding into the logo | 20/20 | 0 | 0 | 47 s |
+| `spider_find_under_table` | spider | walking under furniture, finding an apple under a table | 20/20 | 0 | 0 | 17 s |
 
-140 episodes run in about 5 minutes on 8 cores (MuJoCo runs ~10x faster than real time).
-Max localisation error over all episodes: 7 mm.
+200 episodes (seeds 600–619, never used for tuning) in about 4.5 minutes on 7 cores; no robot
+touched an object it was not asked to handle. Ablation: with the 3D LiDAR and ToF switched off
+(`tasks/ablation/low_obstacles_2d_only.yaml`) the rover drives under the low console and gets stuck.
+Known hard case: `fetch_red_bottle_kitchen_to_desk` seed 9 (a red cup hidden behind the red bottle
+from every camera until the fingers are there) fails safely: no false success, the cup stays put.
 
 ### Colour vs learned detector
 
@@ -130,9 +151,11 @@ src/robotcode/
   manipulation.py  arm + gripper control                safety.py          bumper / tilt / battery
   skills.py        skill library (LLM tool list)        planner.py         VN/EN rule planner
   llm_planner.py   optional LLM planner + validation    agent.py           mission executor
-  stack.py         onboard software loop                runtime.py         simulation + referee
+  legged.py        leg IK, gait, fold/unfold postures    stack.py           onboard software loop
+  runtime.py       simulation + referee
   evaluate.py      episodes and benchmarks              cli.py             command line
-tests/             unit, physics and mission tests
+tests/             unit, physics, sensor, legged-robot and mission tests
+tasks/ablation/    the same task with sensors switched off (to measure what they buy)
 ```
 
 ## Safety note

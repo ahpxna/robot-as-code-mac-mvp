@@ -1,0 +1,88 @@
+# A small eight-legged walking robot, described with the same schema as the wheeled robots.
+# The MuJoCo model is generated from this file (robotcode.description); postures are given as foot
+# positions and turned into joint angles by inverse kinematics (robotcode.legged), so changing a
+# leg length re-derives every posture.
+#
+# Frames: for a legged robot the base frame origin is the body centre; +x forward, +y left, +z up.
+name: spider_bot
+description: >
+  Small eight-legged walking robot (spider): 24 servo joints, alternating-tetrapod gait,
+  IMU, foot contact sensors, mini 2D LiDAR and an RGB-D camera. It folds its legs in tight
+  around the body into a compact spider-emblem "logo" pose, and unfolds back to walking.
+
+base:
+  kind: legged
+  body:
+    thorax: {center: [0.02, 0.0, 0.0], radii: [0.055, 0.048, 0.024], mass: 0.32}
+    abdomen: {center: [-0.085, 0.0, 0.006], radii: [0.065, 0.052, 0.030], mass: 0.30}
+    head: {center: [0.085, 0.0, 0.004], radius: 0.026, mass: 0.05}
+    color: [0.09, 0.09, 0.10, 1]
+    accent: [0.82, 0.07, 0.07, 1]
+  battery:
+    mass: 0.12                      # 2S LiPo inside the abdomen
+    capacity_wh: 22.0
+    nominal_voltage: 7.4
+    idle_power_w: 4.0
+    drive_efficiency: 0.6
+  legs:
+    mounts:                         # [x, y, heading_deg] on the thorax; right legs mirror the left ones
+      L1: [0.060, 0.034, 40]
+      L2: [0.036, 0.046, 75]
+      L3: [0.006, 0.048, 105]
+      L4: [-0.024, 0.042, 140]
+    mirror: true
+    coxa: {length: 0.025, mass: 0.012}
+    femur: {length: 0.075, mass: 0.020}
+    tibia: {length: 0.110, mass: 0.015}
+    radius: 0.007
+    foot: {radius: 0.008, friction: 1.1}
+    joints:                         # degrees; servo: kp N*m/rad, damping N*m*s/rad, force limit N*m
+      coxa:  {range: [-70, 70], kp: 8.0, damping: 0.08, force: 1.2}
+      femur: {range: [-80, 110], kp: 8.0, damping: 0.08, force: 1.2}
+      tibia: {range: [-165, 30], kp: 8.0, damping: 0.08, force: 1.2}
+    armature: 0.004                 # reflected gearbox inertia
+    max_speed: 6.0                  # rad/s
+  gait:
+    kind: alternating_tetrapod      # two groups of four legs, like a real spider
+    groups: [[L1, R2, L3, R4], [R1, L2, R3, L4]]
+    period: 0.6                     # s per full cycle
+    step_height: 0.03
+  postures:
+    stand: {body_height: 0.075, foot_reach: 0.13}         # foot distance from its mount, along the mount heading
+    fold:                                                 # "logo" mode: body on the floor, knees up, feet tucked in
+      body_height: 0.024
+      foot_reach: 0.085
+      heading_offset: {L1: -22, L2: -30, L3: 24, L4: 10}  # sweep front legs forward, rear legs back
+  initial_posture: stand
+  limits:
+    max_linear_speed: 0.15
+    max_angular_speed: 0.8
+    max_linear_accel: 0.4
+    max_angular_accel: 2.0
+
+sensors:
+  head_camera:
+    x: 0.105
+    z: 0.012
+    pitch_deg: 0
+    fovy_deg: 70
+    width: 240
+    height: 180
+    depth_noise_std: 0.002
+  lidar:                            # mini 360-degree LiDAR on top of the abdomen
+    x: -0.06
+    z: 0.05
+    fov_deg: 360
+    beams: 240
+    range_min: 0.08
+    range_max: 6.0
+    rate_hz: 10
+    noise_std: 0.008
+  imu:
+    gyro_noise_std: 0.002
+    gyro_bias_std: 0.0005
+    accel_noise_std: 0.02
+  foot_contacts: {}
+
+control:
+  rate_hz: 50
