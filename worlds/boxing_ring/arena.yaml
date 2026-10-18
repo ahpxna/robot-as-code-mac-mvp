@@ -1,0 +1,12 @@
+# Boxing ring for robot fighters. robotcode.arena generates the MuJoCo model from this file.
+name: boxing_ring
+ring:
+  size: 4.0                 # inside the ropes, m (square)
+  canvas_rgba: [0.86, 0.86, 0.84, 1]
+  friction: 1.0
+  ropes: {heights: [0.40, 0.75, 1.10], radius: 0.02, rgba: [0.95, 0.95, 0.95, 1]}
+  posts: {radius: 0.07, height: 1.25, rgba: [0.75, 0.75, 0.78, 1]}
+corners:                    # start pose of each fighter: x, y (m), yaw (deg); shell colour
+  red: {pose: [-0.65, 0.0, 0], rgba: [0.80, 0.12, 0.10, 1]}
+  blue: {pose: [0.65, 0.0, 180], rgba: [0.10, 0.28, 0.85, 1]}
+camera: {distance: 4.2, elevation: -18, azimuth: 90}

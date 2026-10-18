@@ -22,6 +22,9 @@ class DescriptionTests(unittest.TestCase):
             if spec["base"]["kind"] == "legged":
                 legs = len(spec["base"]["legs"]["mounts"]) * (2 if spec["base"]["legs"].get("mirror") else 1)
                 self.assertEqual(model.nu, 3 * legs, path.stem)          # coxa, femur, tibia servos
+            elif spec["base"]["kind"] == "humanoid":
+                from robotcode.humanoid import humanoid_joint_names
+                self.assertEqual(model.nu, len(humanoid_joint_names(spec)), path.stem)
             else:
                 self.assertEqual(model.actuator("left_wheel_motor").trntype, 0)
 

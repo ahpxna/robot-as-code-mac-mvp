@@ -12,6 +12,7 @@ that a real robot driver can implement later.
 | `helper_rover` | 25 kg wheeled mobile manipulator, lift + telescoping arm, gripper | fetch and deliver objects |
 | `spider_bot` | 1.4 kg eight-legged walker, 24 servos | walk under furniture, search, fold into a compact spider "logo" |
 | `scout` | arm-less wheeled rover | patrol and search |
+| `humanoid_boxer` | 1.3 m, 47 kg biped, 21 servos, padded gloves | box another robot in a ring: balance, footwork, punches, camera tracking |
 
 You give it a task in Vietnamese or English:
 
@@ -61,6 +62,16 @@ mjpython -m robotcode.cli --scenario demo_spider                    # boots fold
 mjpython -m robotcode.cli --scenario spider_fold_in_office          # walk to the office, fold into the logo
 python -m robotcode.cli --headless --scenario spider_find_under_table   # finds an apple under the kitchen table
 mjpython -m robotcode.cli --scenario spider_fold_in_office --interactive   # then type: "Mở ra rồi đi vào bếp"
+```
+
+Robot boxing (two humanoids, a referee, three rounds; details in [docs/HUMANOID_BOXING.md](docs/HUMANOID_BOXING.md)):
+
+```bash
+mjpython -m robotcode.match                          # 3D viewer with scoreboard
+python -m robotcode.match --headless --rounds 1      # scorecard in the terminal
+python -m robotcode.match --bench 12 --rounds 1      # 12 matches in parallel + statistics
+python -m robotcode.match --rounds 1 --video build/video/match.mp4   # record (offscreen, no display needed)
+pip install -e '.[rl]' && python scripts/train_boxing.py --timesteps 200000   # learn tactics with PPO
 ```
 
 Optional LLM planner (writes a JSON plan of skill calls that is validated
@@ -144,6 +155,7 @@ Details, variants (input size, precision, thresholds) and failure analysis:
 ```
 robots/            robot descriptions (YAML)            worlds/apartment/  world.xml + semantic.yaml
 objects/           object catalog                       tasks/             missions + success criteria
+worlds/boxing_ring/ arena.yaml (ring, corners)          tasks/boxing/      match rules, fighting styles
                                                         tasks/perception/  tasks only the learned detector can do
 src/robotcode/
   description.py   YAML -> MJCF generator               scene.py           world + robot + objects -> model
@@ -157,6 +169,10 @@ src/robotcode/
   legged.py        leg IK, gait, fold/unfold postures    stack.py           onboard software loop
   runtime.py       simulation + referee
   evaluate.py      episodes and benchmarks              cli.py             command line
+  humanoid.py      humanoid joints, stances, leg IK      balance.py         capture-point balance + footwork
+  boxing.py        punches, arm IK, opponent tracker     arena.py           ring + namespaced robots
+  match.py         referee, scripted boxer, matches      rl/boxing_env.py   Gymnasium env (tactics)
+scripts/train_boxing.py   PPO training / evaluation
 tests/             unit, physics, sensor, legged-robot and mission tests
 tasks/ablation/    the same task with sensors switched off (to measure what they buy)
 ```

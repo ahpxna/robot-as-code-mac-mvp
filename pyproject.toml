@@ -19,11 +19,14 @@ dependencies = [
 llm = ["openai>=1.40"]
 # Learned open-vocabulary object detector (OWLv2): --detector learned. Weights (~600 MB) download on first use.
 vision = ["torch>=2.2", "transformers>=4.45"]
+# Reinforcement learning (boxing tactics on top of the humanoid controller): scripts/train_boxing.py
+rl = ["gymnasium>=1.0", "stable-baselines3>=2.3"]
 
 [project.scripts]
 robot-mvp = "robotcode.cli:main"
 robot-eval = "robotcode.evaluate:main"
 robot-perception-bench = "robotcode.perception_bench:main"
+robot-boxing = "robotcode.match:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

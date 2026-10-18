@@ -42,6 +42,8 @@ class RobotState:
     battery: BatteryState
     estopped: bool
     touch: dict[str, float] = field(default_factory=dict)    # contact sensors, e.g. feet of a legged robot
+    orientation: np.ndarray | None = None                     # IMU fused orientation quaternion (w, x, y, z)
+    joint_velocities: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,6 +81,21 @@ class RGBDFrame:
     cy: float
     camera: str = "head_camera"
     meta: dict = field(default_factory=dict)
+
+
+def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array([w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2, w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2])
+
+
+def _quat_from_rotvec(v: np.ndarray) -> np.ndarray:
+    angle = float(np.linalg.norm(v))
+    if angle < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    axis = v / angle
+    return np.array([math.cos(angle / 2), *(axis * math.sin(angle / 2))])
 
 
 class RobotInterface(ABC):
@@ -125,21 +142,27 @@ class SimRobot(RobotInterface):
 
     WATCHDOG_S = 0.3
 
-    def __init__(self, model, data, spec: dict, *, seed: int = 0):
+    def __init__(self, model, data, spec: dict, *, seed: int = 0, prefix: str = ""):
         import mujoco
 
         self._mj = mujoco
         self.model, self.data, self.spec = model, data, spec
+        self.prefix = prefix            # several robots in one scene are namespaced ('red_', 'blue_')
         self.rng = np.random.default_rng(seed + 7919)
         s = spec["sensors"]
         self.joints = actuated_joint_names(spec)       # position-servoed: arm and legs
-        self._act = {model.actuator(i).name: i for i in range(model.nu)}
-        self._sensor = {model.sensor(i).name: (model.sensor(i).adr[0], model.sensor(i).dim[0])
-                        for i in range(model.nsensor)}
-        self._base_id = model.body("base").id
+        n = len(prefix)
+        self._act = {model.actuator(i).name[n:]: i for i in range(model.nu) if model.actuator(i).name.startswith(prefix)}
+        self._sensor = {model.sensor(i).name[n:]: (model.sensor(i).adr[0], model.sensor(i).dim[0])
+                        for i in range(model.nsensor) if model.sensor(i).name.startswith(prefix)}
+        self._touch = [model.sensor(i).name[n:] for i in range(model.nsensor) if model.sensor(i).name.startswith(prefix)
+                       and model.sensor_type[i] == mujoco.mjtSensor.mjSENS_TOUCH]
+        self._base_id = model.body(prefix + "base").id
         self._ctrl_range = {name: tuple(model.actuator_ctrlrange[i]) for name, i in self._act.items()}
+        self._act_ids = np.array(sorted(self._act.values()), dtype=int)
         imu = s.get("imu", {})
         self._gyro_bias = self.rng.normal(0.0, imu.get("gyro_bias_std", 0.0), 3)
+        self._attitude_bias = _quat_from_rotvec(self.rng.normal(0.0, math.radians(imu.get("orientation_bias_deg", 0.0)), 3))
         self._last_wheel_cmd = -1.0
         self._estop = False
         self._brownout = False
@@ -174,7 +197,7 @@ class SimRobot(RobotInterface):
             fov = math.radians(lidar["fov_deg"])
             self._lidar_angles = np.linspace(-fov / 2, fov / 2, int(lidar["beams"]))
         for name in self.joints:
-            self._set_ctrl(f"{name}_motor", float(data.joint(name).qpos[0]))
+            self._set_ctrl(f"{name}_motor", float(data.joint(prefix + name).qpos[0]))
 
     def _root_body(self, body: int) -> int:
         while self.model.body_parentid[body] != 0:
@@ -188,7 +211,8 @@ class SimRobot(RobotInterface):
             self._set_ctrl("left_wheel_motor", 0.0)
             self._set_ctrl("right_wheel_motor", 0.0)
         if self._battery_spec:
-            mech = np.maximum(d.actuator_force * d.actuator_velocity, 0.0).sum()
+            mine = self._act_ids                  # only this robot's motors (several robots may share a scene)
+            mech = np.maximum(d.actuator_force[mine] * d.actuator_velocity[mine], 0.0).sum()
             self._power = self._battery_spec.get("idle_power_w", 20.0) + mech / self._battery_spec.get(
                 "drive_efficiency", 0.75)
             self._energy_j += self._power * dt
@@ -223,7 +247,13 @@ class SimRobot(RobotInterface):
         accel = self._read("imu_accel") + self.rng.normal(0, imu.get("accel_noise_std", 0.0), 3)
         joints = {j: float(self._read(f"{j}_encoder")[0]) for j in self.joints}
         efforts = {j: float(self._read(f"{j}_effort")[0]) for j in self.joints}
-        touch = {name[5:]: float(self._read(name)[0]) for name in self._sensor if name.startswith("foot_")}
+        touch = {(name[5:] if name.startswith("foot_") else name): float(self._read(name)[0]) for name in self._touch}
+        velocities = {j: float(self._read(f"{j}_speed")[0]) for j in self.joints if f"{j}_speed" in self._sensor}
+        orientation = None
+        if "imu_quat" in self._sensor:
+            # The IMU's fused orientation output: a fixed mounting/attitude error plus a little jitter.
+            jitter = self.rng.normal(0, math.radians(imu.get("orientation_jitter_deg", 0.0)), 3)
+            orientation = _quat_mul(_quat_mul(self._read("imu_quat"), self._attitude_bias), _quat_from_rotvec(jitter))
         gripper = float(self._read("gripper_encoder")[0]) if has_gripper(self.spec) else 0.0
         forces = ((float(self._read("finger_left_force")[0]), float(self._read("finger_right_force")[0]))
                   if has_gripper(self.spec) else (0.0, 0.0))
@@ -233,7 +263,7 @@ class SimRobot(RobotInterface):
         battery = BatteryState(soc, nominal * (0.82 + 0.18 * soc) if soc > 0 else 0.0, self._power,
                                self._energy_j / 3600.0)
         return RobotState(self.time(), wheel_pos, wheel_vel, gyro, accel, joints, efforts, gripper, forces,
-                          bumper, battery, self._estop, touch)
+                          bumper, battery, self._estop, touch, orientation, velocities)
 
     def read_scan(self) -> LaserScan | None:
         lidar = self.spec["sensors"].get("lidar")
@@ -241,7 +271,7 @@ class SimRobot(RobotInterface):
             return None
         if self._scan is not None and self.time() - self._scan.stamp < 1.0 / lidar["rate_hz"] - 1e-9:
             return self._scan
-        site = self.data.site("lidar")
+        site = self.data.site(self.prefix + "lidar")
         rot = site.xmat.reshape(3, 3)
         local = np.stack([np.cos(self._lidar_angles), np.sin(self._lidar_angles),
                           np.zeros_like(self._lidar_angles)], axis=1)
@@ -264,7 +294,7 @@ class SimRobot(RobotInterface):
             return None
         if self._cloud is not None and self.time() - self._cloud.stamp < 1.0 / l3["rate_hz"] - 1e-9:
             return self._cloud
-        site = self.data.site("lidar_3d")
+        site = self.data.site(self.prefix + "lidar_3d")
         rot = site.xmat.reshape(3, 3)
         n = len(self._cloud_dirs)
         dist = np.zeros(n)
@@ -292,7 +322,7 @@ class SimRobot(RobotInterface):
         ranges = np.full(k, np.inf)
         geomid = np.zeros(1, dtype=np.int32)
         for i in range(k):
-            site = self.data.site(f"tof_{i}")
+            site = self.data.site(f"{self.prefix}tof_{i}")
             d = self._mj.mj_ray(self.model, self.data, site.xpos.copy(), site.xmat.reshape(3, 3)[:, 2].copy(),
                                 None, 1, self._base_id, geomid)
             if d >= 0 and geomid[0] not in self._robot_geoms:
@@ -314,10 +344,10 @@ class SimRobot(RobotInterface):
         if camera not in self._renderers:
             self._renderers[camera] = mj.Renderer(self.model, height, width)
         r = self._renderers[camera]
-        r.update_scene(self.data, camera=camera, scene_option=self._scene_option)
+        r.update_scene(self.data, camera=self.prefix + camera, scene_option=self._scene_option)
         rgb = r.render().copy()
         r.enable_depth_rendering()
-        r.update_scene(self.data, camera=camera, scene_option=self._scene_option)
+        r.update_scene(self.data, camera=self.prefix + camera, scene_option=self._scene_option)
         depth = r.render().astype(np.float32)
         r.disable_depth_rendering()
         noise = cam.get("depth_noise_std", 0.0)
@@ -363,7 +393,7 @@ class SimRobot(RobotInterface):
             self._set_ctrl("left_wheel_motor", 0.0)
             self._set_ctrl("right_wheel_motor", 0.0)
             for name in self.joints:              # servo brakes hold the arm/legs where they are
-                self._set_ctrl(f"{name}_motor", float(self.data.joint(name).qpos[0]))
+                self._set_ctrl(f"{name}_motor", float(self.data.joint(self.prefix + name).qpos[0]))
 
     def close(self) -> None:
         for renderer in self._renderers.values():

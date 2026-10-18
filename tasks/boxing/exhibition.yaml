@@ -1,0 +1,17 @@
+# Three-round exhibition between two copies of the boxing humanoid.
+#   python -m robotcode.match --match tasks/boxing/exhibition.yaml --headless
+#   mjpython -m robotcode.match --match tasks/boxing/exhibition.yaml
+name: boxing_exhibition
+world: boxing_ring
+fighters:
+  red: {robot: humanoid_boxer, style: pressure}
+  blue: {robot: humanoid_boxer, style: counter}
+rules:
+  rounds: 3
+  round_s: 45               # simulated seconds
+  break_s: 0                # corners are not simulated between rounds
+  count_s: 10               # knockdown count
+  points: {head: 2, body: 1, knockdown: 5}
+  hit_force: 60             # N: glove contact force that counts as a landed punch
+  clinch_gap: 0.50          # m between the fighters' pelvises: locked up
+  clinch_break_s: 0.4       # the referee calls 'break' after this long

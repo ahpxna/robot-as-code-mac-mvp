@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 
+from .humanoid import ARM_JOINTS, LEG_JOINTS, SIDES, humanoid_joint_names, is_humanoid, pelvis_height
 from .legged import SEGMENTS, is_legged, leg_joint_names, leg_mounts
 
 # Robot geoms collide with the world but never with each other.
@@ -48,10 +49,12 @@ def arm_joint_names(spec: dict) -> list[str]:
 
 def actuated_joint_names(spec: dict) -> list[str]:
     """Position-servoed joints the HAL exposes (arm and legs; wheels and gripper have their own calls)."""
-    return arm_joint_names(spec) + leg_joint_names(spec)
+    return arm_joint_names(spec) + leg_joint_names(spec) + humanoid_joint_names(spec)
 
 
 def spawn_height(spec: dict) -> float:
+    if is_humanoid(spec):
+        return pelvis_height(spec) + 0.003
     if not is_legged(spec):
         return 0.0
     base = spec["base"]
@@ -76,13 +79,19 @@ def robot_mjcf(spec: dict, *, floating: bool = True, pose=(0.0, 0.0, 0.0)) -> ET
     sensors = el(root, "sensor")
     equality = el(root, "equality")
     x, y, yaw = pose
-    legged = is_legged(spec)
-    # Wheeled robots: base origin on the floor. Legged robots: base origin at the body centre,
-    # spawned at the height of their initial posture.
+    legged = is_legged(spec) or is_humanoid(spec)
+    # Wheeled robots: base origin on the floor. Legged robots: base origin at the body centre
+    # (humanoids: the pelvis), spawned at the height of their initial posture.
     z0 = spawn_height(spec) if (legged and floating) else 0.0
     base = el(world, "body", name="base", pos=[x, y, z0], euler=[0, 0, yaw])
     if floating:
         el(base, "freejoint", name="base_free")
+    if is_humanoid(spec):
+        _build_humanoid(spec, base, actuators, sensors)
+        for section in (actuators, sensors, equality):
+            if not len(section):
+                root.remove(section)
+        return root
     if legged:
         _build_legged_base(spec, base, actuators, sensors)
     else:
@@ -98,6 +107,33 @@ def robot_mjcf(spec: dict, *, floating: bool = True, pose=(0.0, 0.0, 0.0)) -> ET
     for section in (actuators, sensors, equality):
         if not len(section):
             root.remove(section)
+    return root
+
+
+# Attributes that hold names of (or references to) robot elements.
+_NAME_ATTRS = ("name", "joint", "joint1", "joint2", "site", "actuator", "body", "body1", "body2", "objname",
+               "camera", "tendon", "geom", "geom1", "geom2", "target")
+
+
+def prefix_names(root: ET.Element, prefix: str) -> ET.Element:
+    """Namespace every element of a generated robot ('red_' + 'L_knee') so several robots can share
+    one scene. The HAL takes the same prefix and strips it, so the robot software is unchanged."""
+    for element in root.iter():
+        for attr in _NAME_ATTRS:
+            if attr in element.attrib:
+                element.attrib[attr] = prefix + element.attrib[attr]
+    return root
+
+
+def set_collision_group(root: ET.Element, index: int, count: int) -> ET.Element:
+    """Robot `index` of `count` in one scene: its parts collide with the world and with the other
+    robots, never with each other (single robots use contype 2 / conaffinity 1)."""
+    own = 2 << index
+    others = sum(2 << j for j in range(count) if j != index)
+    for geom in root.iter("geom"):
+        if geom.get("contype") == "2" and geom.get("conaffinity") == "1":
+            geom.set("contype", str(own))
+            geom.set("conaffinity", str(1 | others))
     return root
 
 
@@ -201,6 +237,129 @@ def _build_legged_base(spec: dict, base: ET.Element, actuators: ET.Element, sens
             el(parent, "site", name=f"{name}_foot_touch", type="sphere", size=[foot["radius"] + 0.004], pos=pos,
                rgba=[0, 0, 0, 0])
             el(sensors, "touch", name=f"foot_{name}", site=f"{name}_foot_touch")
+
+
+def _build_humanoid(spec: dict, base: ET.Element, actuators: ET.Element, sensors: ET.Element) -> None:
+    """Pelvis (floating base) -> waist -> torso, head, arms; pelvis -> legs -> feet."""
+    b = spec["base"]
+    J = b["joints"]
+    shell, trim = b.get("color", [0.8, 0.15, 0.12, 1]), b.get("trim", [0.15, 0.15, 0.17, 1])
+    armature = b.get("armature", 0.02)
+    s = spec["sensors"]
+
+    def motor_mass(link):
+        # Links between two joints carry the actuator itself: ~0.3 kg of motor and gearbox.
+        el(link, "inertial", pos=[0, 0, 0], mass=0.3, diaginertia=[3e-4, 3e-4, 3e-4])
+
+    def joint(parent, name, axis):
+        j = J[name.split("_", 1)[1] if name[:2] in ("L_", "R_") else name]
+        el(parent, "joint", name=name, type="hinge", axis=axis, range=[math.radians(v) for v in j["range"]],
+           damping=j["damping"], armature=armature)
+        el(actuators, "position", name=f"{name}_motor", joint=name, kp=j["kp"],
+           ctrlrange=[math.radians(v) for v in j["range"]], forcerange=[-j["torque"], j["torque"]])
+        el(sensors, "jointpos", name=f"{name}_encoder", joint=name)
+        el(sensors, "jointvel", name=f"{name}_speed", joint=name)
+        el(sensors, "actuatorfrc", name=f"{name}_effort", actuator=f"{name}_motor")
+
+    pelvis = b["pelvis"]
+    el(base, "geom", name="pelvis", type="box", size=pelvis["half"], mass=pelvis["mass"], rgba=trim, **ROBOT_COLLISION)
+    if "imu" in s:
+        el(base, "site", name="imu", pos=[0, 0, 0], size=[0.01], rgba=[1, 0, 0, 0])
+        el(sensors, "gyro", name="imu_gyro", site="imu")
+        el(sensors, "accelerometer", name="imu_accel", site="imu")
+        el(sensors, "framequat", name="imu_quat", objtype="site", objname="imu")
+
+    # Upper body: waist yaw, torso, head, arms.
+    torso_cfg, head_cfg = b["torso"], b["head"]
+    waist = el(base, "body", name="torso_link", pos=[0, 0, pelvis["half"][2]])
+    joint(waist, "waist_yaw", [0, 0, 1])
+    tz = torso_cfg["above_waist"]
+    el(waist, "geom", name="torso", type="box", size=torso_cfg["half"], pos=[0, 0, tz], mass=torso_cfg["mass"],
+       rgba=shell, **ROBOT_COLLISION)
+    hz = tz + head_cfg["above_torso"]
+    el(waist, "geom", name="neck", type="capsule", fromto=[0, 0, tz + torso_cfg["half"][2], 0, 0, hz - head_cfg["radius"]],
+       size=[0.035], mass=0.3, rgba=trim, **ROBOT_COLLISION)
+    el(waist, "geom", name="head", type="sphere", size=[head_cfg["radius"]], pos=[0, 0, hz], mass=head_cfg["mass"],
+       rgba=shell, **ROBOT_COLLISION)
+    el(waist, "geom", name="visor", type="box", size=[0.02, 0.06, 0.025], pos=[head_cfg["radius"] - 0.01, 0, hz + 0.01],
+       rgba=[0.05, 0.05, 0.06, 1], mass=0.01, contype=0, conaffinity=0)
+    if "impact" in s:
+        el(waist, "site", name="head_impact", type="sphere", size=[head_cfg["radius"] + 0.01], pos=[0, 0, hz],
+           rgba=[0, 0, 0, 0])
+        el(waist, "site", name="torso_impact", type="box", size=[h + 0.01 for h in torso_cfg["half"]], pos=[0, 0, tz],
+           rgba=[0, 0, 0, 0])
+        el(sensors, "touch", name="head_hit", site="head_impact")
+        el(sensors, "touch", name="torso_hit", site="torso_impact")
+    cam = s.get("head_camera")
+    if cam:
+        pitch = math.radians(cam["pitch_deg"])
+        el(waist, "camera", name="head_camera", pos=[cam["x"], 0, hz + cam["z"]],
+           xyaxes=[0, -1, 0, math.sin(pitch), 0, math.cos(pitch)], fovy=cam["fovy_deg"])
+    arms = b["arms"]
+    for side, sign in zip(SIDES, (1, -1)):
+        sx, sy, sz = arms["shoulder"]
+        link = el(waist, "body", name=f"{side}_shoulder_pitch_link", pos=[sx, sign * sy, tz + sz])
+        joint(link, f"{side}_shoulder_pitch", [0, -1, 0])
+        el(link, "geom", name=f"{side}_shoulder", type="sphere", size=[0.055], mass=0.5, rgba=trim, contype=0,
+           conaffinity=0)
+        link = el(link, "body", name=f"{side}_shoulder_roll_link")
+        motor_mass(link)
+        joint(link, f"{side}_shoulder_roll", [sign, 0, 0])
+        link = el(link, "body", name=f"{side}_upper_arm")
+        joint(link, f"{side}_shoulder_yaw", [0, 0, sign])     # mirrored: + turns the forearm outwards
+        ua = arms["upper_arm"]
+        el(link, "geom", name=f"{side}_upper_arm_geom", type="capsule", fromto=[0, 0, 0, 0, 0, -ua["length"]],
+           size=[ua["radius"]], mass=ua["mass"], rgba=shell, **ROBOT_COLLISION)
+        fore = el(link, "body", name=f"{side}_forearm", pos=[0, 0, -ua["length"]])
+        joint(fore, f"{side}_elbow", [0, -1, 0])
+        fa, glove = arms["forearm"], arms["glove"]
+        el(fore, "geom", name=f"{side}_forearm_geom", type="capsule", fromto=[0, 0, 0, 0, 0, -fa["length"]],
+           size=[fa["radius"]], mass=fa["mass"], rgba=trim, **ROBOT_COLLISION)
+        gz = -fa["length"] - glove["radius"] * 0.5
+        el(fore, "geom", name=f"{side}_glove", type="sphere", size=[glove["radius"]], pos=[0, 0, gz],
+           mass=glove["mass"], rgba=shell, solref=glove.get("padding", [0.02, 1]), **ROBOT_COLLISION)  # padded
+        el(fore, "site", name=f"{side}_fist", pos=[0, 0, gz], size=[0.01], rgba=[1, 1, 1, 0])
+        if "impact" in s:
+            el(fore, "site", name=f"{side}_glove_impact", type="sphere", size=[glove["radius"] + 0.01], pos=[0, 0, gz],
+               rgba=[0, 0, 0, 0])
+            el(sensors, "touch", name=f"{side}_glove_hit", site=f"{side}_glove_impact")
+
+    # Legs.
+    legs = b["legs"]
+    thigh, shank, foot = legs["thigh"], legs["shank"], legs["foot"]
+    for side, sign in zip(SIDES, (1, -1)):
+        hx, hy, hz_ = legs["hip"]
+        link = el(base, "body", name=f"{side}_hip_yaw_link", pos=[hx, sign * hy, hz_])
+        motor_mass(link)
+        joint(link, f"{side}_hip_yaw", [0, 0, sign])          # mirrored: + turns the toes outwards
+        link = el(link, "body", name=f"{side}_hip_roll_link")
+        motor_mass(link)
+        joint(link, f"{side}_hip_roll", [sign, 0, 0])
+        link = el(link, "body", name=f"{side}_thigh")
+        joint(link, f"{side}_hip_pitch", [0, -1, 0])
+        el(link, "geom", name=f"{side}_thigh_geom", type="capsule", fromto=[0, 0, 0, 0, 0, -thigh["length"]],
+           size=[thigh["radius"]], mass=thigh["mass"], rgba=shell, **ROBOT_COLLISION)
+        link = el(link, "body", name=f"{side}_shank", pos=[0, 0, -thigh["length"]])
+        joint(link, f"{side}_knee", [0, 1, 0])
+        # The capsule stops one radius above the ankle so it never reaches the floor.
+        el(link, "geom", name=f"{side}_shank_geom", type="capsule",
+           fromto=[0, 0, 0, 0, 0, -shank["length"] + shank["radius"] + 0.01],
+           size=[shank["radius"]], mass=shank["mass"], rgba=trim, **ROBOT_COLLISION)
+        link = el(link, "body", name=f"{side}_ankle_link", pos=[0, 0, -shank["length"]])
+        motor_mass(link)
+        joint(link, f"{side}_ankle_pitch", [0, -1, 0])
+        link = el(link, "body", name=f"{side}_foot")
+        joint(link, f"{side}_ankle_roll", [sign, 0, 0])
+        half = foot["half"]
+        fx = foot.get("forward", 0.0)
+        el(link, "geom", name=f"{side}_foot_geom", type="box", size=half, pos=[fx, 0, -half[2]], mass=foot["mass"],
+           friction=[foot.get("friction", 1.0), foot.get("torsional_friction", 0.02), 0.001],
+           condim=foot.get("condim", 3), rgba=trim, **ROBOT_COLLISION)
+        if "foot_force" in s:
+            for part, px in (("heel", fx - half[0] * 0.6), ("toe", fx + half[0] * 0.6)):
+                el(link, "site", name=f"{side}_{part}_pad", type="box", size=[half[0] * 0.4 + 0.005, half[1] + 0.005, 0.012],
+                   pos=[px, 0, -2 * half[2]], rgba=[0, 0, 0, 0])
+                el(sensors, "touch", name=f"{side}_{part}_force", site=f"{side}_{part}_pad")
 
 
 def _build_cartesian_arm(spec: dict, base: ET.Element, actuators: ET.Element, sensors: ET.Element) -> ET.Element:

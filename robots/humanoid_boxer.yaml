@@ -1,0 +1,118 @@
+# A boxing humanoid, described with the same schema as the other robots. The MuJoCo model is
+# generated from this file (robotcode.description). Joint angles are in degrees here.
+#
+# Frames: base frame origin at the pelvis centre; +x forward, +y left, +z up.
+# Joint sign conventions (both sides): positive hip_pitch / knee / elbow = flexion, positive
+# hip_roll / shoulder_roll = away from the body, positive ankle_pitch = toes up,
+# positive shoulder_pitch = arm raised forwards.
+name: humanoid_boxer
+description: >
+  1.3 m, ~47 kg biped for robot boxing: 21 actuated joints (6 per leg, waist yaw, 4 per arm),
+  padded gloves, IMU with fused orientation, joint encoders, heel/toe force sensors on each foot,
+  impact sensors on head and torso (hits taken) and in the gloves (hits landed), RGB-D head camera.
+
+base:
+  kind: humanoid
+  color: [0.80, 0.14, 0.12, 1]          # shell colour; the arena repaints each corner (red / blue)
+  trim: [0.15, 0.15, 0.17, 1]
+  pelvis: {half: [0.08, 0.12, 0.06], mass: 6.0}
+  torso: {half: [0.09, 0.15, 0.17], above_waist: 0.22, mass: 13.0}
+  head: {radius: 0.095, above_torso: 0.27, mass: 2.0}
+  legs:
+    hip: [0.0, 0.09, -0.06]             # hip joints from the pelvis centre (left side; mirrored)
+    thigh: {length: 0.33, radius: 0.05, mass: 4.5}
+    shank: {length: 0.33, radius: 0.04, mass: 2.5}
+    foot: {half: [0.115, 0.05, 0.02], forward: 0.03, mass: 1.0, friction: 1.2, condim: 4, torsional_friction: 0.04}  # rubber soles grip in yaw too
+  arms:
+    shoulder: [0.0, 0.20, 0.13]         # shoulder joints from the torso centre (left; mirrored)
+    upper_arm: {length: 0.26, radius: 0.04, mass: 1.6}
+    forearm: {length: 0.24, radius: 0.035, mass: 1.0}
+    glove: {radius: 0.06, mass: 0.45, padding: [0.04, 1.0]}   # soft contact (solref): padded glove
+  joints:                               # range deg; servo kp N*m/rad, damping N*m*s/rad, torque limit N*m
+    hip_yaw:        {range: [-30, 30],   kp: 300, damping: 6,  torque: 90}
+    hip_roll:       {range: [-25, 35],   kp: 700, damping: 12, torque: 130}
+    hip_pitch:      {range: [-40, 100],  kp: 700, damping: 12, torque: 160}
+    knee:           {range: [0, 140],    kp: 700, damping: 12, torque: 180}
+    ankle_pitch:    {range: [-30, 45],   kp: 400, damping: 6,  torque: 90}
+    ankle_roll:     {range: [-20, 20],   kp: 300, damping: 5,  torque: 60}
+    waist_yaw:      {range: [-60, 60],   kp: 300, damping: 8,  torque: 45}   # weaker than the feet's grip in yaw
+    shoulder_pitch: {range: [-60, 170],  kp: 200, damping: 4,  torque: 32}
+    shoulder_roll:  {range: [-20, 100],  kp: 200, damping: 4,  torque: 32}
+    shoulder_yaw:   {range: [-90, 90],   kp: 100, damping: 2,  torque: 25}
+    elbow:          {range: [0, 150],    kp: 150, damping: 3,  torque: 25}
+  armature: 0.02
+  postures:                             # upper body (deg); keys without L_/R_ apply to both arms
+    rest: {shoulder_roll: 8, elbow: 10}
+    guard:                              # gloves at the chin, elbows in (solved with the arm IK)
+      waist_yaw: -12                    # left shoulder slightly forward (orthodox)
+      L_shoulder_pitch: 48
+      L_shoulder_roll: -1
+      L_shoulder_yaw: -11
+      L_elbow: 120
+      R_shoulder_pitch: 52
+      R_shoulder_roll: -13
+      R_shoulder_yaw: -36
+      R_elbow: 115
+    block:                              # high guard: gloves in front of the face
+      waist_yaw: -5
+      L_shoulder_pitch: 71
+      L_shoulder_roll: -3
+      L_shoulder_yaw: -28
+      L_elbow: 115
+      R_shoulder_pitch: 74
+      R_shoulder_roll: -7
+      R_shoulder_yaw: -34
+      R_elbow: 112
+  stances:                              # ankles relative to the pelvis: [x, y, yaw deg]; pelvis height (m)
+    square: {L: [0.0, 0.10, 0], R: [0.0, -0.10, 0], pelvis_height: 0.68}
+    orthodox: {L: [0.10, 0.12, 0], R: [-0.10, -0.12, -15], pelvis_height: 0.66, lead: L}
+  initial: {stance: orthodox, posture: guard}
+
+sensors:
+  imu: {gyro_noise_std: 0.003, gyro_bias_std: 0.0005, accel_noise_std: 0.03, orientation_bias_deg: 0.5, orientation_jitter_deg: 0.05}
+  foot_force: {}                        # heel and toe pads on each foot
+  impact: {}                            # head / torso hit sensors, glove sensors
+  head_camera: {x: 0.08, z: 0.02, pitch_deg: 10, fovy_deg: 75, width: 240, height: 180, depth_noise_std: 0.003}
+
+moves:                                  # robotcode.boxing: punches aimed by arm IK at a target point
+  # hand: lead / rear; aim: head / body; waist: torso twist at full extension (deg, + = turn left);
+  # reach: how far past the target point the fist is driven (m); times in seconds.
+  jab:   {hand: lead, aim: head, waist: -28, reach: 0.10, extend_s: 0.26, hold_s: 0.06, retract_s: 0.30}
+  cross: {hand: rear, aim: head, waist: 22, reach: 0.10, extend_s: 0.30, hold_s: 0.06, retract_s: 0.36}
+  body:  {hand: rear, aim: body, waist: 22, reach: 0.08, via: [0.18, 0.02, 0.26], via_s: 0.10, extend_s: 0.22,
+          hold_s: 0.06, retract_s: 0.36}  # via: dip to stomach height first (pelvis frame, y mirrored per hand)
+  hook:                                 # swings in around the guard: wind wide, then twist through
+    hand: lead
+    aim: head
+    kind: hook
+    wind: {waist: 5, shoulder_pitch: 75, shoulder_roll: 75, shoulder_yaw: 0, elbow: 80}
+    wind_s: 0.14
+    waist: -28                          # mirrored for a right hook
+    elbow: 60
+    side: 0.05                          # land on the near side of the head
+    extend_s: 0.26
+    hold_s: 0.04
+    retract_s: 0.36
+
+boxing:
+  glove_contact: 15                     # N on a glove's impact sensor: the punch connected, snap back
+
+balance:                                # robotcode.balance (capture-point stance control)
+  dcm_gain: 0.7                         # pelvis shift per metre of capture-point error
+  com_trim: 1.0                         # 1/s
+  sag_integral: 4.0                     # 1/s: holds the pelvis level against joint compliance
+  com_feedforward: 1.0
+  torque_feedforward: 0.5               # share of the gravity/load holding torque fed to the servos
+  velocity_filter_hz: 12
+  contact_force: 25                     # N on a foot's pads = foot loaded
+  fall_tilt_deg: 45
+
+gait:                                   # boxing footwork (step-drag), robotcode.balance
+  shift_s: 0.55                         # centre of pressure moves onto the stance foot
+  swing_s: 0.4
+  lift: 0.07
+  com_inset: 0.035                      # pressure point inside the stance foot, towards the swing foot
+  lift_tolerance: 0.04                  # m of capture-point error allowed at lift-off (else wait / abort)
+
+control:
+  rate_hz: 100

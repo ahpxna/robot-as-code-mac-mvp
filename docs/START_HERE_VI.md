@@ -73,6 +73,25 @@ mjpython -m robotcode.cli --scenario spider_fold_in_office --interactive
 
 Khi gập: thân hạ xuống nằm trên sàn, rồi từng nhóm 4 chân nhấc lên và thu vào, chân trước quét về trước, chân sau quét ra sau, tạo dáng logo con nhện. Đường gập được kiểm tra trước để các chân không va vào nhau. Lệnh đi lại khi đang gập sẽ tự mở ra trước. Planner phân biệt **"gập"** (gấp chân) với **"gắp"** (gắp đồ), kể cả khi gõ không dấu thì vẫn ưu tiên đúng ngữ cảnh.
 
+## Robot hình người đấu boxing
+
+`robots/humanoid_boxer.yaml`: robot hai chân cao 1,3 m, 47 kg, 21 servo (6 mỗi chân, xoay eo, 4 mỗi tay), găng có đệm, IMU, encoder, cảm biến lực gót/mũi chân, cảm biến va chạm ở đầu/thân/găng, camera RGB-D ở đầu. Hai robot (góc đỏ, góc xanh) đấu trên võ đài, có trọng tài chấm điểm.
+
+```bash
+mjpython -m robotcode.match                          # xem trận đấu 3D, có bảng điểm
+python -m robotcode.match --headless --rounds 1      # không cửa sổ, in kết quả
+python -m robotcode.match --bench 12 --rounds 1      # 12 trận song song + thống kê
+python -m robotcode.match --rounds 1 --video build/video/tran_dau.mp4   # quay video (không cần màn hình)
+```
+
+Mỗi võ sĩ tự **giữ thăng bằng** (capture point, ước lượng trọng tâm từ IMU + động học chân, tự hiệu chỉnh sai số IMU lúc khởi động), **di chuyển chân** kiểu boxing (bước tới – kéo chân sau, xoay người), **tìm đối thủ bằng camera** (sai số đầu ~2 cm), **ra đòn** jab / cross / hook / đấm thân (IK tay, ngắm vào khe hở của thế thủ, rút tay ngay khi chạm), **đỡ đòn** và **phản đòn**. Trọng tài tính điểm (đầu 2, thân 1), đếm knock-down (10 s là KO), tách hai võ sĩ khi ôm ghì.
+
+Phong cách đánh (`tasks/boxing/styles.yaml`): `pressure` (áp sát), `counter` (phản đòn), `outboxer` (giữ khoảng cách). Luật trận: `tasks/boxing/exhibition.yaml`.
+
+Học tăng cường (chiến thuật) cho máy có/không có GPU: `pip install -e '.[rl]'` rồi `python scripts/train_boxing.py --timesteps 200000`. Ghi chú chuyển sang PC NVIDIA (MuJoCo MJX): `docs/HUMANOID_BOXING.md`.
+
+Giới hạn: chưa tự đứng dậy sau khi ngã; bị đẩy mạnh (>~20 N·s) hoặc dính đòn khi đang đứng một chân thì có thể ngã; bước chân còn chậm.
+
 ## Cảm biến của robot giúp việc
 
 Ngoài camera RGB-D ở đầu, LiDAR 2D, IMU, encoder, cảm biến lực ở ngón kẹp và bumper, robot có thêm:
@@ -88,7 +107,7 @@ Vật đang kẹp trong tay được lọc khỏi dữ liệu LiDAR 3D (giống 
 ## Kiểm thử và đo lường
 
 ```bash
-python -m unittest discover -s tests -v        # 39 test: đơn vị, vật lý, nhiệm vụ đầy đủ, nhận diện (1 test cần [vision] tự bỏ qua nếu chưa cài)
+python -m unittest discover -s tests -v        # 62 test: đơn vị, vật lý, nhiệm vụ, nhận diện, robot boxing (test cần [vision]/[rl] tự bỏ qua nếu chưa cài)
 python -m robotcode.evaluate --episodes 20     # mỗi nhiệm vụ 20 lần với vị trí ngẫu nhiên
 ```
 

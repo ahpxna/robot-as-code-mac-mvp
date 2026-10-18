@@ -1,0 +1,21 @@
+# Fighting styles for the scripted boxer (robotcode.match.ScriptedBoxer).
+# range: preferred distance pelvis -> opponent head (m); aggression: chance per second of opening
+# a combo when in range; block / counter: chance of reacting to an incoming punch that way.
+pressure:
+  range: 0.60
+  aggression: 1.4
+  block: 0.25
+  counter: 0.35
+  combos: [[jab, cross], [jab, body], [cross, hook], [jab, jab, cross], [body, hook], [jab, cross, body]]
+counter:
+  range: 0.66
+  aggression: 0.6
+  block: 0.45
+  counter: 0.75
+  combos: [[jab], [cross], [jab, cross], [body], [jab, body]]
+outboxer:
+  range: 0.70
+  aggression: 0.9
+  block: 0.40
+  counter: 0.40
+  combos: [[jab], [jab, jab], [jab, cross], [jab, body]]
