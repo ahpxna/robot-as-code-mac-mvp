@@ -50,11 +50,14 @@ python -m unittest discover -s tests -v
 ```
 
 In the viewer, blue dots are the planned path, yellow rings the objects the
-robot remembers, the green arrow its believed pose.
+robot remembers, the green arrow its believed pose. `--camera follow` makes the
+camera track the robot (default for small robots), `--camera house` shows the
+whole apartment.
 
 The spider robot (same commands, another task file or `--scenario` with `robot: spider_bot`):
 
 ```bash
+mjpython -m robotcode.cli --scenario demo_spider                    # boots folded, unfolds, walks, folds again
 mjpython -m robotcode.cli --scenario spider_fold_in_office          # walk to the office, fold into the logo
 python -m robotcode.cli --headless --scenario spider_find_under_table   # finds an apple under the kitchen table
 mjpython -m robotcode.cli --scenario spider_fold_in_office --interactive   # then type: "Mở ra rồi đi vào bếp"

@@ -52,12 +52,16 @@ def main(argv=None) -> int:
                         help="object detector (default: perception.detector in the robot/catalog YAML, else color)")
     parser.add_argument("--report", help="write the episode report (JSON) to this file")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--camera", choices=["house", "follow"], default=None,
+                        help="viewer camera: whole apartment, or follow the robot (default: follow small robots)")
     args = parser.parse_args(argv)
 
     try:
         task = load_task(args.scenario)
     except ConfigError as exc:
         parser.error(str(exc))
+    if args.camera:
+        task = {**task, "viewer_camera": args.camera}
     instruction = args.task or task.get("instruction")
     from .planner import UnsupportedTask
 

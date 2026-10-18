@@ -148,6 +148,8 @@ def build_scene(task: dict, *, seed: int = 0, write: bool = True) -> Scene:
     robot_spec = load_robot(task.get("robot", "helper_rover"))
     for sensor in task.get("sensors_off", []):          # ablation: run the same robot without a sensor
         robot_spec["sensors"].pop(sensor, None)
+    if "initial_posture" in task:                       # e.g. a legged robot that boots folded
+        robot_spec["base"]["initial_posture"] = task["initial_posture"]
     catalog = load_catalog()
     from .kinematics import Kinematics
 

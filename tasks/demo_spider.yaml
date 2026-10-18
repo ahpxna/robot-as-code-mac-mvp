@@ -1,0 +1,16 @@
+# Demo: the spider boots folded into its logo in the living room, unfolds, walks to the office
+# (under nothing it cannot pass) and folds up again. Viewer camera follows it by default.
+name: demo_spider
+world: apartment
+robot: spider_bot
+initial_posture: fold
+instruction: "Mở ra, đi vào phòng làm việc rồi gập lại thành logo"
+robot_start: {pose: [1.7, 1.5, 0.6], jitter: [0.05, 0.05, 0.1]}
+objects:
+  - {name: red_bottle, type: bottle, color: red, support: coffee_table}
+  - {name: green_apple, type: apple, color: green, support: floor, at: [2.05, 5.05]}
+success:
+  - robot_in_room: office
+  - robot_posture: fold
+  - max_collisions: 0
+time_limit: 200

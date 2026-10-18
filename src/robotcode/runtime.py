@@ -121,9 +121,20 @@ class Simulation:
         return float(self.data.time)
 
     def _configure_camera(self) -> None:
+        """'house': a fixed overview of the apartment; 'follow': a camera that tracks the robot
+        (the default for small robots, which are specks in the overview)."""
+        mj = self._mj
         cam = self.viewer.cam
-        cam.lookat[:] = [4.0, 3.4, 0.0]
-        cam.distance, cam.azimuth, cam.elevation = 10.5, -90.0, -62.0
+        height = self.stack.nav.robot_height + self.stack.base_height
+        mode = self.task.get("viewer_camera") or ("follow" if height < 0.5 else "house")
+        if mode == "follow":
+            cam.type = mj.mjtCamera.mjCAMERA_TRACKING
+            cam.trackbodyid = self.model.body("base").id
+            cam.distance = max(0.9, 2.6 * height)
+            cam.azimuth, cam.elevation = 150.0, -30.0
+        else:
+            cam.lookat[:] = [4.0, 3.4, 0.0]
+            cam.distance, cam.azimuth, cam.elevation = 10.5, -90.0, -62.0
 
     def step(self) -> bool:
         """Advance one control period. Returns False if the viewer was closed."""
